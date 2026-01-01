@@ -207,7 +207,7 @@ The code in this repository is licensed under the Apache 2.0 License. The model 
 OpenOneRec is built upon and inspired by the open-source ecosystem. We would like to thank:
 
 - **Qwen3**: for providing the base architecture and model initialization that OpenOneRec builds upon.
-- **General-domain data sources**: for the public corpora referenced in `data/general_text`(github链接) used for mixed-domain training.
+- **General-domain data sources**: for the public corpora referenced in [`data/general_text`](https://github.com/Kuaishou-OneRec/OpenOneRec/tree/main/data/general_text) used for mixed-domain training.
 - **VeRL & PyTorch distributed training**: for the training infrastructure and scalable primitives (e.g., **FSDP**) used in post-training and large-scale runs.
 
 We sincerely thank these projects for their outstanding work.
