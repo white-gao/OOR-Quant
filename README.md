@@ -73,7 +73,7 @@ Our framework utilizes the following recipe:
     * *Stage 3*: Reinforcement Learning to enhance recommendation capabilities.
 
 <div align="center">
-  <img src="assets/framework.png" width="80%" alt="OpenOneRec Overall Framework" />
+  <img src="assets/main_framework.png" width="80%" alt="OpenOneRec Overall Framework" />
   <br>
   <em>Figure: The Overall Framework of OpenOneRec.</em>
 </div>
