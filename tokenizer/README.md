@@ -2,6 +2,11 @@
 
 A residual K-means model for vector quantization. It encodes continuous embeddings into discrete codes through hierarchical clustering.
 
+> Public weights are available at [OpenOneRec/OneRec-tokenizer](https://huggingface.co/OpenOneRec/OneRec-tokenizer).
+
+
+> To utilize our foundation model, when using new datasets, the **embedding model** must be [Qwen3-8B-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-8B).
+
 ## Files
 
 - `res_kmeans.py` - Model definition
