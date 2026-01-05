@@ -67,14 +67,10 @@ checkpoints/
 ckpt/
 
 # Data
-*.parquet
+# *.parquet
 # *.csv
-*.json
-*.jsonl
-!pyproject.toml
+# *.json
+# *.jsonl
 
 # Ray
 ray_results/
-
-# Project specific
-OneRecBench
