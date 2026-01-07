@@ -79,7 +79,7 @@ bash run.sh
 | label_cond_rec | `sft/label_cond_rec.py` | Predict items by interaction type (like/follow/forward/etc.) |
 | label_pred | `sft/label_pred.py` | Binary classification: predict if user will watch a video for long |
 | ad_rec | `sft/ad_rec.py` | Cross-domain: predict ad clicks based on video and ad history |
-| goods_rec | `sft/goods_rec.py` | Cross-domain: predict goods clicks based on video and goods history |
+| product_rec | `sft/product_rec.py` | Cross-domain: predict product clicks based on video and product history |
 | item_understand | `sft/item_understand.py` | Generate video description from SID |
 | reco_reason | `sft/reco_reason.py` | Generate recommendation reasoning: analyze user interests and explain recommendations |
 

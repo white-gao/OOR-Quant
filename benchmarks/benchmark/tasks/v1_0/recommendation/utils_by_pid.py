@@ -98,7 +98,7 @@ def apply_sid_to_pid_strategy(pid_info_list: List[Dict[str, int]], strategy: str
     Args:
         pid_info_list: List of PID info dictionaries
                       Format: [{"pid": pid1, "count": count1, "count_after_downsample": count2}, ...]
-                      or [{"iid": iid1, "count": count1, "count_after_downsample": count2}, ...] for goods
+                      or [{"iid": iid1, "count": count1, "count_after_downsample": count2}, ...] for product
         strategy: One of "most_popular_originally", "most_popular_after_downsampling", or "random"
 
     Returns:

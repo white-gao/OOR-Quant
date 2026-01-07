@@ -83,8 +83,6 @@ def build_messages(user_content: str, task_prompt: str, answer: str) -> str:
 
 def process_row(row, pid2sid: dict) -> dict:
     """Process a single row of data."""
-    hist_video_pids = row['hist_video_pid']
-    hist_video_longview = row['hist_video_longview']
     hist_ad_pids = row['hist_ad_pid']
     target_ad_pids = row['target_ad_pid']
 
@@ -97,17 +95,15 @@ def process_row(row, pid2sid: dict) -> dict:
     # Build user content parts
     user_content_parts = []
 
-    # 1. Process video watch history (only long-view videos)
-    if hist_video_pids is not None and not (isinstance(hist_video_pids, float) and pd.isna(hist_video_pids)):
-        if hist_video_longview is not None and not (isinstance(hist_video_longview, float) and pd.isna(hist_video_longview)):
-            # Filter to only include long-view videos (longview == 1)
-            longview_pids = [pid for pid, lv in zip(hist_video_pids, hist_video_longview) if lv == 1]
-            if len(longview_pids) > 0:
-                # Keep the most recent videos (rightmost in the list)
-                video_sids = pids_to_sids(longview_pids[-VIDEO_HIST_MAX_LEN:], pid2sid)
-                if video_sids:
-                    video_prompt = random.choice(VIDEO_WATCH_PROMPTS)
-                    user_content_parts.append(f"{video_prompt}{video_sids}")
+    # 1. Process video watch history (long-view videos)
+    hist_longview_video_list = row['hist_longview_video_list']
+    if hist_longview_video_list is not None and not (isinstance(hist_longview_video_list, float) and pd.isna(hist_longview_video_list)):
+        if len(hist_longview_video_list) > 0:
+            # Keep the most recent videos (rightmost in the list)
+            video_sids = pids_to_sids(hist_longview_video_list[-VIDEO_HIST_MAX_LEN:], pid2sid)
+            if video_sids:
+                video_prompt = random.choice(VIDEO_WATCH_PROMPTS)
+                user_content_parts.append(f"{video_prompt}{video_sids}")
 
     # 2. Process ad click history
     if hist_ad_pids is not None and not (isinstance(hist_ad_pids, float) and pd.isna(hist_ad_pids)):
