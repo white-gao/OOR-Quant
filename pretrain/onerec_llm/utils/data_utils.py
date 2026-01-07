@@ -56,11 +56,11 @@ class FakeParquetFileFromFastParquetFile:
     """Wrapper for fastparquet ParquetFile to match pyarrow interface."""
     
     def __init__(self, fast_parquet_file):
-        # 包的版本： mpirun --allow-run-as-root --hostfile /etc/mpi/hostfile --pernode bash -c "pip3 install fastparquet==2024.2.0"
+        # Package version: mpirun --allow-run-as-root --hostfile /etc/mpi/hostfile --pernode bash -c "pip3 install fastparquet==2024.2.0"
         from fastparquet import ParquetFile
         self.fast_parquet_file = fast_parquet_file
 
-        # 把打开文件逻辑放在前面，防止文件被删除而打开失败
+        # Put file opening logic first to prevent failure if file is deleted
         self.res = ParquetFile(self.fast_parquet_file)
         self.res.num_rows = len(self.res.to_pandas())
         self.num_row_groups = 1

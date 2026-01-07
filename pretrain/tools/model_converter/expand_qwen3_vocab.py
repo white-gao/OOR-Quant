@@ -1,7 +1,7 @@
 """Qwen3 Vocabulary Expansion Tool
 
-将标准的 Qwen3 HuggingFace checkpoint 扩展词表以支持后训练。
-添加新的 token 并调整模型词表大小（对齐到 256 的倍数）。
+Expand the standard Qwen3 HuggingFace checkpoint vocabulary to support post-training.
+Add new tokens and adjust model vocabulary size (aligned to multiples of 256).
 """
 
 import argparse
@@ -16,7 +16,7 @@ from typing import List
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-# 配置日志
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',

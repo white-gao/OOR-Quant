@@ -21,7 +21,7 @@ class RecommendationEvaluator(BaseEval):
     Supports:
     - label_cond: Predict next video given specified consumption behavior
     - video: Next video prediction
-    - goods: Predict next clicked product
+    - product: Predict next clicked product
     - ad: Predict next clicked advertisement
 
     Metrics:
@@ -334,7 +334,7 @@ class RecommendationEvaluator(BaseEval):
         if evaluation_mode in ("pid", "both"):
             from pathlib import Path
             task_name = self.task_config.get("name", "")
-            if task_name == "goods":
+            if task_name == "product":
                 mapping_filename = "sid2iid.json"
             else:
                 mapping_filename = "sid2pid.json"

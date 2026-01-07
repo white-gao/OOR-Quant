@@ -1,80 +1,80 @@
-# OpenOneRec 预训练模块
+# OpenOneRec Pretraining Module
 
-OpenOneRec 预训练模块基于 Qwen3 架构，支持两阶段预训练（Itemic-Text Alignment → Full-parameter Co-Pretraining）和SFT的训练流程。
+The OpenOneRec pretraining module is based on the Qwen3 architecture, supporting a two-stage pretraining pipeline (Itemic-Text Alignment → Full-parameter Co-Pretraining) and SFT training workflow.
 
-> **⚠️ 重要提示**
-> 
-> 本模块的分布式训练**依赖 MPI（Message Passing Interface）**进行多节点通信。当前训练脚本使用 `mpirun` 启动分布式训练，需要配置正确的 MPI 环境（如 OpenMPI）和 hostfile。
-> 
-> 为了简化环境配置和提升可复现性，我们计划在后续版本中发布：
-> - **预配置的 Docker/Apptainer 镜像**：包含所有必要的依赖和 MPI 环境
-> - **基于 torchrun 的训练脚本**：提供更易用的分布式训练启动方式
-> 
-> 在镜像和 torchrun 版本发布之前，请确保您的环境已正确安装和配置 MPI。
+> **⚠️ Important Notice**
+>
+> The distributed training in this module **relies on MPI (Message Passing Interface)** for multi-node communication. The current training scripts use `mpirun` to launch distributed training, requiring proper MPI environment configuration (e.g., OpenMPI) and hostfile setup.
+>
+> To simplify environment configuration and improve reproducibility, we plan to release in future versions:
+> - **Pre-configured Docker/Apptainer images**: Including all necessary dependencies and MPI environment
+> - **torchrun-based training scripts**: Providing an easier way to launch distributed training
+>
+> Before the images and torchrun versions are released, please ensure your environment has MPI properly installed and configured.
 
 
-## 快速开始
+## Quick Start
 
-### 前置要求
+### Prerequisites
 
-- **硬件**：支持 CUDA 的 GPU（建议多卡或多节点）
-- **软件**：
+- **Hardware**: CUDA-enabled GPUs (multi-GPU or multi-node recommended)
+- **Software**:
   - Python 3.8+
-  - PyTorch（支持 FSDP 和分布式训练）
-  - OpenMPI 或兼容的 MPI 实现
-  - NCCL（用于 GPU 间通信）
-- **数据**：已转换为 Parquet 格式的训练数据（参考 `../data/README.md`）
-- **模型**：Qwen3 基础模型（HuggingFace 格式）
+  - PyTorch (with FSDP and distributed training support)
+  - OpenMPI or compatible MPI implementation
+  - NCCL (for GPU communication)
+- **Data**: Training data converted to Parquet format (refer to `../data/README.md`)
+- **Model**: Qwen3 base model (HuggingFace format)
 
-### 1. 环境配置
+### 1. Environment Setup
 
-首先配置训练环境：
+First, configure the training environment:
 
 ```bash
-# 设置环境变量
+# Set environment variables
 source set_env.sh
 ```
 
-该脚本会设置必要的环境变量，包括 Python 路径、CUDA 路径等。
+This script sets necessary environment variables, including Python path, CUDA path, etc.
 
-### 2. Qwen3 模型词表扩展
+### 2. Qwen3 Model Vocabulary Expansion
 
-在开始训练之前，需要先对 Qwen3 基础模型进行词表扩展，以支持推荐系统特有的 item ID 编码（itemic tokens）。
+Before starting training, you need to expand the vocabulary of the Qwen3 base model to support recommendation system-specific item ID encoding (itemic tokens).
 
-#### 2.1 配置参数
+#### 2.1 Configure Parameters
 
-编辑 `scripts/expand_qwen3_vocab.sh`，设置以下参数：
+Edit `scripts/expand_qwen3_vocab.sh` and set the following parameters:
 
 ```bash
-HF_MODEL_DIR=/path/to/Qwen3-0.6B          # 原始 Qwen3 HuggingFace 模型路径
-OUTPUT_MODEL_DIR=/path/to/Qwen3-0.6B_itemic  # 输出扩展词表后的模型路径
-ITEMIC_LAYER_N=3                          # Itemic token 的层数
-VOCAB_SIZE_PER_LAYER=8192                 # 每层扩展的词表大小
+HF_MODEL_DIR=/path/to/Qwen3-0.6B          # Original Qwen3 HuggingFace model path
+OUTPUT_MODEL_DIR=/path/to/Qwen3-0.6B_itemic  # Output model path with expanded vocabulary
+ITEMIC_LAYER_N=3                          # Number of layers for itemic tokens
+VOCAB_SIZE_PER_LAYER=8192                 # Vocabulary size expansion per layer
 ```
 
-#### 2.2 执行扩展
+#### 2.2 Execute Expansion
 
 ```bash
 bash scripts/expand_qwen3_vocab.sh
 ```
 
-该脚本会：
-- 在原始词表基础上添加新的 itemic tokens
-- 将词表大小对齐到 256 的倍数
-- 初始化新 token 的 embedding 权重
-- 保存扩展后的模型到指定目录
+This script will:
+- Add new itemic tokens on top of the original vocabulary
+- Align vocabulary size to multiples of 256
+- Initialize embedding weights for new tokens
+- Save the expanded model to the specified directory
 
-**注意**：扩展后的模型路径需要在后续训练的数据配置文件中使用（`base_model_dir` 字段）。
+**Note**: The expanded model path needs to be used in the data configuration file for subsequent training (`base_model_dir` field).
 
-### 3. 数据准备
+### 3. Data Preparation
 
-训练数据需要转换为 Parquet 格式，具体格式规范请参考 `../data/README.md`。
+Training data needs to be converted to Parquet format. Please refer to `../data/README.md` for format specifications.
 
-数据配置通过 JSON 文件指定，位于 `examples/dataset_config/` 目录下。
+Data configuration is specified through JSON files located in the `examples/dataset_config/` directory.
 
-#### 数据配置格式
+#### Data Configuration Format
 
-每个数据配置文件包含以下主要字段：
+Each data configuration file contains the following main fields:
 
 ```json
 {
@@ -91,189 +91,189 @@ bash scripts/expand_qwen3_vocab.sh
 }
 ```
 
-data目录中的处理脚本会自动产出该配置文件。
+The processing scripts in the data directory will automatically generate this configuration file.
 
-### 4. 训练
+### 4. Training
 
-训练脚本位于 `examples/` 目录下，数据配置文件位于 `examples/dataset_config/` 目录。
+Training scripts are located in the `examples/` directory, and data configuration files are in the `examples/dataset_config/` directory.
 
-#### 4.1 Stage1 预训练
+#### 4.1 Stage1 Pretraining
 
-Stage1 主要用于训练 itemic embedding，通常需要冻结 LLM 参数，只优化 embedding 层。
+Stage1 is mainly used for training itemic embeddings, typically freezing LLM parameters and only optimizing the embedding layer.
 
 ```bash
-# 编辑 examples/pretrain_stg1.sh，设置模型路径、输出路径等参数
+# Edit examples/pretrain_stg1.sh to set model path, output path, and other parameters
 bash examples/pretrain_stg1.sh
 ```
 
-主要训练参数（在 `pretrain_stg1.sh` 中配置）：
-- `--dataset_config examples/dataset_config/stg1.json`：指定数据配置
-- `--freeze_llm`：冻结 LLM 参数
-- `--start_optimize_embedding_index 151669`：从指定 token ID 开始优化 embedding
-- `--model_dir`：扩展词表后的基础模型路径
-- `--output_dir`：模型输出路径
+Main training parameters (configured in `pretrain_stg1.sh`):
+- `--dataset_config examples/dataset_config/stg1.json`: Specify data configuration
+- `--freeze_llm`: Freeze LLM parameters
+- `--start_optimize_embedding_index 151669`: Start optimizing embeddings from the specified token ID
+- `--model_dir`: Base model path with expanded vocabulary
+- `--output_dir`: Model output path
 
-#### 4.2 Stage2 预训练
+#### 4.2 Stage2 Pretraining
 
-Stage2 用于全参数预训练，进一步优化模型性能。该阶段会解冻所有模型参数，在推荐数据和通用文本数据的混合域上进行协同预训练。
+Stage2 is used for full-parameter pretraining to further optimize model performance. This stage unfreezes all model parameters and performs co-pretraining on a mixed domain of recommendation data and general text data.
 
 ```bash
-# 编辑 examples/pretrain_stg2.sh，设置模型路径、输出路径等参数
-# MODEL_DIR 应指向 Stage1 训练输出的转换后的模型路径
+# Edit examples/pretrain_stg2.sh to set model path, output path, and other parameters
+# MODEL_DIR should point to the converted model path from Stage1 training output
 bash examples/pretrain_stg2.sh
 ```
 
-主要训练参数（在 `pretrain_stg2.sh` 中配置）：
-- `--dataset_config examples/dataset_config/pretrain.json`：指定数据配置（包含推荐数据和通用文本数据）
-- `--model_dir`：Stage1 输出的转换后的模型路径
-- `--output_dir`：模型输出路径
-- 注意：**不包含** `--freeze_llm` 参数，表示全参数训练
+Main training parameters (configured in `pretrain_stg2.sh`):
+- `--dataset_config examples/dataset_config/pretrain.json`: Specify data configuration (including recommendation data and general text data)
+- `--model_dir`: Converted model path from Stage1 output
+- `--output_dir`: Model output path
+- Note: **Does not include** `--freeze_llm` parameter, indicating full-parameter training
 
-#### 4.3 SFT 微调
+#### 4.3 SFT Fine-tuning
 
-SFT（Supervised Fine-Tuning）用于指令微调，提升模型在特定任务上的表现。该阶段在指令遵循数据上进行监督学习，使模型能够更好地理解和执行推荐相关的指令。
+SFT (Supervised Fine-Tuning) is used for instruction fine-tuning to improve model performance on specific tasks. This stage performs supervised learning on instruction-following data, enabling the model to better understand and execute recommendation-related instructions.
 
 ```bash
-# 编辑 examples/posttrain_sft.sh，设置模型路径、输出路径等参数
-# MODEL_DIR 应指向 Stage2 训练输出的转换后的模型路径
+# Edit examples/posttrain_sft.sh to set model path, output path, and other parameters
+# MODEL_DIR should point to the converted model path from Stage2 training output
 bash examples/posttrain_sft.sh
 ```
 
-主要训练参数（在 `posttrain_sft.sh` 中配置）：
-- `--dataset_config examples/dataset_config/sft.json`：指定 SFT 数据配置
-- `--model_dir`：Stage2 输出的转换后的模型路径
-- `--output_dir`：模型输出路径
-- 数据配置中 `add_think_pattern: true` 表示数据格式会启用thinking模式，即自动增加 <think> </think>tag，以及/think和/no_think指令（用于推理任务）
+Main training parameters (configured in `posttrain_sft.sh`):
+- `--dataset_config examples/dataset_config/sft.json`: Specify SFT data configuration
+- `--model_dir`: Converted model path from Stage2 output
+- `--output_dir`: Model output path
+- `add_think_pattern: true` in data configuration enables thinking mode, which automatically adds `<think>` `</think>` tags and `/think` and `/no_think` instructions (for reasoning tasks)
 
-## 训练配置说明
+## Training Configuration
 
-### 数据配置字段
+### Data Configuration Fields
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | str | 数据加载器名称，默认为 `"chat_completion_parquet"` |
-| `sources` | str | 数据文件列表路径（JSON 文件）或目录路径列表 |
-| `base_model_dir` | str | 基础模型路径（扩展词表后的模型），依赖该文件对数据进行tokenizer |
-| `max_length` | int | 最大序列长度 |
-| `num_epochs` | int | 训练轮数 |
-| `num_workers` | int | dataloader 的 worker 数量 |
-| `model_class` | str | 模型类名，默认为 `"Qwen3ForCausalLM"` |
-| `itemic_id_range` | list | Itemic token 的 ID 范围 `[start, end]`，仅用来进行指标统计 |
-| `only_assistant_loss` | bool | 是否只计算 assistant response的损失，对chat格式数据生效 |
-| `local_shuffle_buffer_size` | int | 本地 sample level 的 shuffle 缓冲区大小 |
-| `add_think_pattern` | bool | 是否添加think tag （prompt中增加/think /no_think，以及在response中增加<think> </think> |
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Data loader name, default is `"chat_completion_parquet"` |
+| `sources` | str | Data file list path (JSON file) or directory path list |
+| `base_model_dir` | str | Base model path (with expanded vocabulary), used for tokenizing data |
+| `max_length` | int | Maximum sequence length |
+| `num_epochs` | int | Number of training epochs |
+| `num_workers` | int | Number of dataloader workers |
+| `model_class` | str | Model class name, default is `"Qwen3ForCausalLM"` |
+| `itemic_id_range` | list | Itemic token ID range `[start, end]`, only used for metrics statistics |
+| `only_assistant_loss` | bool | Whether to only compute loss for assistant responses, applies to chat format data |
+| `local_shuffle_buffer_size` | int | Local sample-level shuffle buffer size |
+| `add_think_pattern` | bool | Whether to add think tags (add `/think` `/no_think` in prompt, and `<think>` `</think>` in response) |
 
-注：
-* 默认dataset基于torch.utils.data.IterableDataset实现
-* 默认一个GPU绑定一个进程，每个进程创建`num_workers`个worker，数据集按照总worker数量，按照文件粒度分发`sources`中的文件到各个worker，分发前会对文件list进行shuffle，读取数据时也会按照`local_shuffle_buffer_size`进行样本级shuffle
-* 若`num_epochs` > 1，则进行两次训练文件分发，每次分发都会对文件list重新shuffle
+Notes:
+* The default dataset is implemented based on torch.utils.data.IterableDataset
+* By default, one GPU is bound to one process, each process creates `num_workers` workers. The dataset distributes files from `sources` to each worker at file granularity based on total worker count. The file list is shuffled before distribution, and sample-level shuffle is performed according to `local_shuffle_buffer_size` when reading data
+* If `num_epochs` > 1, file distribution is performed twice, with the file list reshuffled each time
 
 
-### 训练参数
+### Training Parameters
 
-主要训练参数通过命令行传入 `recipes/train_qwen3.py`：
+Main training parameters are passed via command line to `recipes/train_qwen3.py`:
 
-| 参数 | 说明 |
-|------|------|
-| `--model_dir` | 基础模型路径（huggingface格式） |
-| `--output_dir` | 模型输出路径 |
-| `--dataset_config` | 数据配置文件路径 |
-| `--freeze_llm` | 是否冻结 LLM 参数 |
-| `--learning_rate` | 学习率 |
-| `--max_length` | 单step序列长度 ｜
-| `--min_lr` | 最小学习率 |
-| `--lr_scheduler_type` | 学习率调度器类型（如 `cosine`） |
-| `--num_training_steps` | 训练步数 |
-| `--save_checkpoint_per_step` | 每 N 步保存一次 checkpoint |
-| `--minibatch_size` | LLM head 切分 chunk 的大小，用于分块计算 loss 以节省显存 |
-| `--resume_from` | 恢复训练的 checkpoint 目录路径 |
-| `--resume_from_tag` | 恢复训练的 checkpoint tag（如`global_step1000`） |
-| `--resume_training_state` | 是否恢复完整的训练状态（包括优化器、学习率调度器和数据加载器状态） |
-| `--start_optimize_embedding_index` | 从指定的 token ID 开始优化 embedding（用于 Stage1 训练，通常设置为 itemic tokens 的起始 ID，如 151669） |
-| `--use_tie_weights` | 绑定 embedding 和 lm_head 的权重（对于 0.6B / 1.7B / 4B 等较小模型必需，以对齐 Qwen3 模型配置） |
+| Parameter | Description |
+|-----------|-------------|
+| `--model_dir` | Base model path (HuggingFace format) |
+| `--output_dir` | Model output path |
+| `--dataset_config` | Data configuration file path |
+| `--freeze_llm` | Whether to freeze LLM parameters |
+| `--learning_rate` | Learning rate |
+| `--max_length` | Sequence length per step |
+| `--min_lr` | Minimum learning rate |
+| `--lr_scheduler_type` | Learning rate scheduler type (e.g., `cosine`) |
+| `--num_training_steps` | Number of training steps |
+| `--save_checkpoint_per_step` | Save checkpoint every N steps |
+| `--minibatch_size` | LLM head chunk size for chunked loss computation to save memory |
+| `--resume_from` | Checkpoint directory path to resume training from |
+| `--resume_from_tag` | Checkpoint tag to resume from (e.g., `global_step1000`) |
+| `--resume_training_state` | Whether to restore full training state (including optimizer, lr scheduler, and dataloader state) |
+| `--start_optimize_embedding_index` | Start optimizing embeddings from the specified token ID (for Stage1 training, typically set to the starting ID of itemic tokens, e.g., 151669) |
+| `--use_tie_weights` | Tie embedding and lm_head weights (required for smaller models like 0.6B / 1.7B / 4B to align with Qwen3 model configuration) |
 
-注：
-* `resume_from`用来加载框架产出的ckpt，当配置了`resume_from`优先加载该参数，仅加载`model_dir`中模型结构等参数用来初始化模型，没配置将同时加载`model_dir`中参数
-* `num_training_steps` 只影响lr decay的step，该配置保证模型训练到`num_training_steps`时，lr decay到最小，但训练不会停止。建议根据token数和`max_length`配置计算最大训练step进行配置
-* `max_length` 表示单step中，单卡最长的序列长度，框架会根据这个配置进行packing
+Notes:
+* `resume_from` is used to load checkpoints produced by the framework. When `resume_from` is configured, it takes priority; only model structure parameters from `model_dir` are loaded for initialization. If not configured, parameters from `model_dir` are also loaded
+* `num_training_steps` only affects the lr decay steps. This configuration ensures that when training reaches `num_training_steps`, lr decays to minimum, but training will not stop. It is recommended to configure based on token count and `max_length` to calculate the maximum training steps
+* `max_length` represents the maximum sequence length per GPU per step; the framework will perform packing based on this configuration
 
-## 工具脚本
+## Utility Scripts
 
-### 模型转换
+### Model Conversion
 
-将训练好的 checkpoint 转换为 HuggingFace 格式：
+Convert trained checkpoints to HuggingFace format:
 
 ```bash
 bash scripts/convert_checkpoint_to_hf.sh <base_model_dir> <model_home> <step>
 ```
 
-参数说明：
-- `base_model_dir`：扩展词表后的 Qwen 基础模型目录（词表扩展阶段的输出）
-- `model_home`：训练输出目录（即训练脚本中的 `OUTPUT_DIR`）
-- `step`：要转换的 checkpoint 步数
+Parameter description:
+- `base_model_dir`: Qwen base model directory with expanded vocabulary (output from vocabulary expansion stage)
+- `model_home`: Training output directory (i.e., `OUTPUT_DIR` in training script)
+- `step`: Checkpoint step number to convert
 
-**示例：**
+**Example:**
 ```bash
-# 假设词表扩展后的模型在 ./qwen_extended
-# 训练输出在 ./output
-# 要转换第 4000 步的 checkpoint
+# Assuming the vocabulary-expanded model is in ./qwen_extended
+# Training output is in ./output
+# Converting the checkpoint at step 4000
 bash scripts/convert_checkpoint_to_hf.sh ./qwen_extended ./output 4000
 ```
 
-转换过程：
-1. 脚本会自动定位到 `{model_home}/step{step}/global_step{step}` 目录
-2. 读取该目录下的训练 checkpoint
-3. 将转换后的 HuggingFace 格式模型保存到 `{model_home}/step{step}/global_step{step}/converted/`
+Conversion process:
+1. The script automatically locates the `{model_home}/step{step}/global_step{step}` directory
+2. Reads the training checkpoint from that directory
+3. Saves the converted HuggingFace format model to `{model_home}/step{step}/global_step{step}/converted/`
 
-转换后的模型可以直接用于：
-- HuggingFace Transformers 加载和推理
-- 后续的 SFT 或其他微调阶段
-- 模型评估和部署
+The converted model can be directly used for:
+- Loading and inference with HuggingFace Transformers
+- Subsequent SFT or other fine-tuning stages
+- Model evaluation and deployment
 
-### 模型测试
+### Model Testing
 
-测试转换后的 HuggingFace 模型：
+Test the converted HuggingFace model:
 
 ```bash
 bash scripts/test_hf_model.sh <hf_model_dir>
 ```
 
-参数说明：
-- `hf_model_dir`：转换后的 HuggingFace 模型目录
+Parameter description:
+- `hf_model_dir`: Converted HuggingFace model directory
 
-**示例：**
+**Example:**
 ```bash
-# 测试上面转换的第 4000 步模型
+# Test the converted model at step 4000
 bash scripts/test_hf_model.sh ./output/step4000/global_step4000/converted/
 ```
 
-该脚本会验证：
-- 模型权重是否正确加载
-- 前向传播是否正常
-- 生成功能是否可用
+This script will verify:
+- Whether model weights are loaded correctly
+- Whether forward pass works normally
+- Whether generation functionality is available
 
-### 训练监控
+### Training Monitoring
 
-训练过程中的日志和输出：
+Logs and outputs during training:
 
-- **标准输出/错误**：保存在 `$OUTPUT_DIR/stdout.log` 和 `$OUTPUT_DIR/stderr.log`
-- **训练日志**：包含损失值、学习率、训练步数等信息
-- **TensorBoard**：模型支持 TensorBoard 可视化，可通过以下命令启动 TensorBoard 查看：
+- **Standard output/error**: Saved in `$OUTPUT_DIR/stdout.log` and `$OUTPUT_DIR/stderr.log`
+- **Training logs**: Contains loss values, learning rate, training steps, and other information
+- **TensorBoard**: The model supports TensorBoard visualization. You can start TensorBoard with:
   ```bash
   tensorboard --logdir=$OUTPUT_DIR
   ```
-- **Checkpoint**：按配置的步数间隔保存（`--save_checkpoint_per_step`）
+- **Checkpoint**: Saved at configured step intervals (`--save_checkpoint_per_step`)
 
-### 检查点管理
+### Checkpoint Management
 
-训练过程中会定期保存 checkpoint，目录结构如下：
+Checkpoints are saved periodically during training with the following directory structure:
 
 ```
 output_dir/
 ├── step50/
 │   └── global_step50/
-│       ├── model/          # 模型权重
-│       ├── optimizer/      # 优化器状态
+│       ├── model/          # Model weights
+│       ├── optimizer/      # Optimizer state
 │       └── ...
 ├── step100/
 │   └── global_step100/
@@ -281,38 +281,38 @@ output_dir/
 └── ...
 ```
 
-**恢复训练**：
-如果需要从某个 checkpoint 恢复训练，可以在训练脚本中添加：
+**Resuming Training**:
+To resume training from a checkpoint, add the following to the training script:
 ```bash
 --resume_from $OUTPUT_DIR/step1000 \
 --resume_from_tag global_step1000 \
 --resume_training_state
 ```
 
-## 注意事项
+## Notes
 
 
-1. **MPI 环境**：
-   - 训练脚本使用 `mpirun` 进行多节点分布式训练，需要安装 OpenMPI 或兼容的 MPI 实现
-   - 需要配置正确的 hostfile（如 `/etc/mpi/hostfile`），格式为每行一个节点地址
-   - 确保所有节点之间可以无密码 SSH 访问
-   - 训练脚本会自动读取 `OMPI_COMM_WORLD_RANK`、`OMPI_COMM_WORLD_SIZE` 等环境变量
+1. **MPI Environment**:
+   - Training scripts use `mpirun` for multi-node distributed training, requiring OpenMPI or compatible MPI implementation
+   - Proper hostfile configuration is required (e.g., `/etc/mpi/hostfile`), with one node address per line
+   - Ensure passwordless SSH access between all nodes
+   - Training scripts automatically read environment variables like `OMPI_COMM_WORLD_RANK`, `OMPI_COMM_WORLD_SIZE`, etc.
 
-2. **数据格式**：
-   - 确保训练数据符合 Parquet 格式规范，参考 `../data/README.md`
-   - 建议每个 Parquet 文件包含约 1000 个样本，便于高效加载和 shuffle
-   - 数据文件列表通过 JSON 文件指定，支持本地路径和 HDFS 路径
+2. **Data Format**:
+   - Ensure training data conforms to Parquet format specifications, refer to `../data/README.md`
+   - It is recommended that each Parquet file contains approximately 1000 samples for efficient loading and shuffling
+   - Data file lists are specified through JSON files, supporting both local paths and HDFS paths
 
-3. **词表扩展**：
-   - 训练前必须先进行词表扩展，使用扩展后的模型作为 `base_model_dir`
-   - 扩展后的模型路径需要在数据配置文件的 `base_model_dir` 字段中指定
-   - 确保 `itemic_id_range` 与词表扩展时的配置一致
+3. **Vocabulary Expansion**:
+   - Vocabulary expansion must be performed before training, using the expanded model as `base_model_dir`
+   - The expanded model path needs to be specified in the `base_model_dir` field of the data configuration file
+   - Ensure `itemic_id_range` is consistent with the configuration during vocabulary expansion
 
-4. **模型大小**：
-   - 对于 0.6B / 1.7B / 4B 较小模型，需要添加 `--use_tie_weights` 参数以对齐Qwen3模型配置
-   - 不同模型大小可能需要不同的学习率和训练步数配置
+4. **Model Size**:
+   - For smaller models like 0.6B / 1.7B / 4B, the `--use_tie_weights` parameter is required to align with Qwen3 model configuration
+   - Different model sizes may require different learning rate and training step configurations
 
-## 相关文档
+## Related Documentation
 
-- [OpenOneRec 主 README](../README.md)：项目总体介绍和完整流程
-- [数据格式规范](../data/README.md)：训练数据的格式要求和预处理方法
+- [OpenOneRec Main README](../README.md): Project overview and complete workflow
+- [Data Format Specification](../data/README.md): Training data format requirements and preprocessing methods

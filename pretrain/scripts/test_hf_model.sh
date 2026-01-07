@@ -12,10 +12,10 @@
 
 set -e
 
-# Model path - 从命令行接收参数
+# Model path - receive from command line argument
 MODEL_PATH="$1"
 
-# 检查 MODEL_PATH 是否为空
+# Check if MODEL_PATH is empty
 if [ -z "${MODEL_PATH}" ]; then
     echo "ERROR: MODEL_PATH cannot be empty"
     echo "Usage: $0 <MODEL_PATH>"
@@ -23,7 +23,7 @@ if [ -z "${MODEL_PATH}" ]; then
     exit 1
 fi
 
-# 检查模型路径是否存在
+# Check if model path exists
 if [ ! -e "${MODEL_PATH}" ]; then
     echo "WARNING: model path does not exist: ${MODEL_PATH}"
     exit 1

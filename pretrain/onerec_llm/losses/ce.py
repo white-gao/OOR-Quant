@@ -71,24 +71,26 @@ class CrossEntropyLoss(nn.Module):
 
 class ChunkedLossComputer:
     """
-    内存高效的分块损失计算器，用于解决大型语言模型中lm_head过大导致的显存不足问题。
-    
-    通过将输入序列分块计算，手动累加梯度，避免一次性为整个序列分配巨大的中间张量。
-    
-    注意：返回的loss已经反向传播并detach，不能用于需要梯度的操作。
+    Memory-efficient chunked loss computer for solving OOM issues caused by large lm_head in LLMs.
+
+    By computing the input sequence in chunks and manually accumulating gradients,
+    it avoids allocating huge intermediate tensors for the entire sequence at once.
+
+    Note: The returned loss has already been backpropagated and detached,
+    and cannot be used for operations requiring gradients.
     """
     def __init__(self, lm_head: nn.Module, loss_fn: nn.Module, minibatch_size: int, shift_labels: bool = True):
         """
-        初始化分块损失计算器。
-        
+        Initialize the chunked loss computer.
+
         Args:
-            lm_head: 语言模型的输出层（通常是nn.Linear）
-            loss_fn: 损失函数，必须返回 (avg_loss, per_token_loss) 元组
-            minibatch_size: 每个分块的大小，用于控制内存使用
-            shift_labels: 是否偏移标签（用于自回归模型）
+            lm_head: The output layer of the language model (typically nn.Linear)
+            loss_fn: Loss function, must return (avg_loss, per_token_loss) tuple
+            minibatch_size: Size of each chunk, used to control memory usage
+            shift_labels: Whether to shift labels (for autoregressive models)
         """
         if not isinstance(lm_head, nn.Module) or not isinstance(loss_fn, nn.Module):
-            raise TypeError("lm_head和loss_fn必须是nn.Module的实例")
+            raise TypeError("lm_head and loss_fn must be instances of nn.Module")
             
         self.lm_head = lm_head
         self.loss_fn = loss_fn
@@ -99,17 +101,18 @@ class ChunkedLossComputer:
 
     def forward_and_backward(self, input: torch.Tensor, labels: torch.Tensor, loss_fn_args: dict = {}):
         """
-        执行分块的前向和反向传播过程。
-        
+        Execute chunked forward and backward propagation.
+
         Args:
-            input: 输入张量，形状为 [batch_size, seq_len, hidden_dim]
-            labels: 标签张量，形状为 [batch_size, seq_len]
-            loss_fn_args: 传递给损失函数的额外参数
-        
+            input: Input tensor with shape [batch_size, seq_len, hidden_dim]
+            labels: Label tensor with shape [batch_size, seq_len]
+            loss_fn_args: Additional arguments passed to the loss function
+
         Returns:
             tuple[torch.Tensor, torch.Tensor]: (final_avg_loss, per_token_loss)
-            
-        注意：返回的loss已经反向传播并detach，不能用于需要梯度的操作。
+
+        Note: The returned loss has already been backpropagated and detached,
+        and cannot be used for operations requiring gradients.
         """
         self.ticker.tick("lm_head")
         params = list(self.lm_head.parameters())
@@ -121,14 +124,14 @@ class ChunkedLossComputer:
 
         seq_len = input.size(1)
         
-        # 计算总有效元素数量
+        # Calculate total number of valid elements
         labels_to_count = labels[:, 1:] if self.shift_labels else labels
         total_elements = (labels_to_count != getattr(self.loss_fn, 'ignore_index', -100)).sum()
         
         if total_elements.item() == 0:
             return torch.tensor(0.0, device=input.device), None
 
-        # 分块计算前向和梯度累加
+        # Chunked forward and gradient accumulation
         for i in range(0, seq_len, self.minibatch_size):
             start, end = i, min(i + self.minibatch_size, seq_len)
             input_chunk = input[:, start:end, :].detach().requires_grad_()
@@ -138,7 +141,7 @@ class ChunkedLossComputer:
             if self.shift_labels:
                 label_start, label_end = start + 1, end + 1
                 labels_chunk = labels[:, label_start:label_end]
-                # 确保logits和labels长度匹配
+                # Ensure logits and labels have matching lengths
                 if logits_chunk.size(1) > labels_chunk.size(1):
                     logits_chunk = logits_chunk[:, :labels_chunk.size(1), :]
             else:
@@ -150,10 +153,10 @@ class ChunkedLossComputer:
             logits_flat = logits_chunk.reshape(-1, self.lm_head.out_features)
             labels_flat = labels_chunk.reshape(-1)
             
-            # 计算损失
+            # Compute loss
             loss_chunk_avg, per_token_loss_chunk = self.loss_fn(logits_flat, labels_flat, **loss_fn_args)
 
-            # 转换为sum loss用于反向传播
+            # Convert to sum loss for backward propagation
             valid_tokens_in_chunk = (labels_flat != getattr(self.loss_fn, 'ignore_index', -100)).sum()
             
             if valid_tokens_in_chunk.item() == 0:
@@ -162,7 +165,7 @@ class ChunkedLossComputer:
             
             loss_chunk_sum = loss_chunk_avg * valid_tokens_in_chunk
 
-            # 手动计算梯度并累加
+            # Manually compute gradients and accumulate
             tensors_to_grad = [p for p in params if p.requires_grad] + [input_chunk]
             grads = torch.autograd.grad(outputs=loss_chunk_sum, inputs=tensors_to_grad, retain_graph=False)
         
@@ -176,7 +179,7 @@ class ChunkedLossComputer:
             total_loss_sum_for_reporting += loss_chunk_sum.detach()
             all_per_token_losses.append(per_token_loss_chunk.detach())
         
-        # 应用累加的梯度
+        # Apply accumulated gradients
         for j, p in enumerate(params):
             if p.requires_grad:
                 p.grad = grad_accs[j] / total_elements

@@ -37,7 +37,7 @@ bash init_ray_cluster.sh
 
 ### Data Format
 
-We use SFT data from five `*_rec` tasks: `video_rec`, `interactive_rec`, `label_cond_rec`, `ad_rec`, `goods_rec`.
+We use SFT data from five `*_rec` tasks: `video_rec`, `interactive_rec`, `label_cond_rec`, `ad_rec`, `product_rec`.
 
 See [data/README.md](../data/README.md) for detailed data format specification.
 
