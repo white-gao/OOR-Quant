@@ -121,6 +121,13 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     data.custom_cls.name=OneRecDataset \
     data.reward_fn_key='source' \
     ++data.data_source_key='source' \
+    actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
+    actor_rollout_ref.actor.entropy_checkpointing=True \
+    actor_rollout_ref.rollout.enable_chunked_prefill=True \
+    actor_rollout_ref.rollout.calculate_log_probs=False \
+    actor_rollout_ref.actor.clip_ratio_high=0.28 \
+    actor_rollout_ref.model.enable_activation_offload=True \
+    actor_rollout_ref.model.use_remove_padding=True \
     custom_reward_function.path=$SCRIPT_DIR/onerec_recipe.py \
     custom_reward_function.name=compute_score \
     actor_rollout_ref.actor.use_dynamic_bsz=$USE_DYNAMIC_BSZ \
@@ -129,6 +136,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.rollout.max_num_batched_tokens=$MAX_TOKENS_PER_GPU \
+    actor_rollout_ref.rollout.max_num_seqs=2048 \
     actor_rollout_ref.actor.optim.lr=$LEARNING_RATE \
     actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
