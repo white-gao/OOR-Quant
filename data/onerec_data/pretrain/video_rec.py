@@ -52,7 +52,7 @@ def process_row(row, pid2sid: dict) -> dict:
         return None
 
     # Truncate and convert to SID
-    hist_sids = pids_to_sids(hist_pids[:HIST_MAX_LEN], pid2sid)
+    hist_sids = pids_to_sids(hist_pids[-HIST_MAX_LEN:], pid2sid)
     target_sids = pids_to_sids(target_pids[:TARGET_MAX_LEN], pid2sid)
 
     if not hist_sids or not target_sids:
