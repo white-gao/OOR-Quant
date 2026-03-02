@@ -41,10 +41,10 @@ To standardize data processing, we use a unified Parquet data format. Each Parqu
 |-------|------|----------|---------|-------------|--------------|
 | uuid | str | Yes | Auto-generated UUID | Unique identifier | Must be a valid UUID format, must be unique within the same dataset |
 | source | str | Yes | - | Data source identifier | Cannot be an empty string |
-| metadata | str | No | "{}" | JSON-formatted metadata dictionary | Must be a valid JSON dictionary string |
+| metadata | str | No | "{}" | JSON-formatted metadata dictionary | Must be a valid JSON dictionary string (pid & sid 4 item or uid 4 user or label 4 pred) |
 | images | str | No | "{}" | (Deprecated) This project only trains on text, this field is not used | - |
 | videos | str | No | "{}" | (Deprecated) This project only trains on text, this field is not used | - |
-| messages | str | No | None | JSON-formatted message list for conversation format data | Must be a valid JSON array, each message must have role and content fields |
+| messages | str | No | None | JSON-formatted message list for conversation format data | Must be a valid JSON array, each message must have role (system or user) and content fields |
 | segments | str | No | None | JSON-formatted segment list for segmented data | Must be a valid JSON array, each segment must have a type field |
 | image | str | No | None | (Deprecated) This project only trains on text, this field is not used | - |
 | video | str | No | None | (Deprecated) This project only trains on text, this field is not used | - |
@@ -103,6 +103,7 @@ part-00009-of-00010.parquet
 ## Quick Start
 
 ### 1. Download Datasets
+- [x] 
 
 First, download the corresponding datasets from HuggingFace:
 
@@ -134,7 +135,7 @@ hf download OpenOneRec/OpenOneRec-RecIF \
 ```
 
 ### 2. Process Recommendation Data
-
+- [x] 
 run:
 
 ```bash
@@ -143,6 +144,8 @@ bash run.sh
 ```
 
 ### 3. Pretraining Data Sharding
+- [ ] Pretrain data
+- [x] SFT data
 
 The generated data can be processed by calling the prepare scripts. Edit `prepare_pretrain.sh` or `prepare_sft.sh` and modify the following configuration:
 
@@ -164,6 +167,7 @@ bash prepare_sft.sh
 ```
 
 ### 4. Distillation Data Processing
+- [ ] 
 
 Data processing for on-policy distillation. Edit `prepare_distillation.sh` and modify the following configuration:
 
@@ -181,6 +185,7 @@ bash prepare_distillation.sh
 ```
 
 ### 5. RL Data Processing
+- [ ] 
 
 Data processing for reinforcement learning (RL) training. Merges multiple RL task datasets and splits them into training and test sets. Edit `prepare_rl.sh` and modify the following configuration:
 

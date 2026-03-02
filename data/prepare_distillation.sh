@@ -4,11 +4,10 @@
 set -e
 
 # Configuration
-INPUT_PATH="../raw_data/general_text/sft"
-OUTPUT_FILE="../output/onpolicy_distillation.parquet"
-TEMP_FILE="../output/onpolicy_distillation_temp.parquet"
-NUM_SAMPLES=200000
-SEED=42
+INPUT_PATH="data/general_text"                    # General text data path
+OUTPUT_FILE="./output/onpolicy_distillation.parquet"  # Output file path
+NUM_SAMPLES=200000                                # Number of samples to sample
+SEED=42 
 ENGINE="pyarrow"
 
 # Check if paths exist

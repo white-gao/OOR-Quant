@@ -2,33 +2,34 @@
 # RecIF Data Processing Script
 # Generate all pretrain and SFT data
 
+export CUDA_VISIBLE_DEVICES=1,2
 set -e
 
 # ============== Task Selection ==============
 # Comment out tasks you don't want to run
 
 # Pretrain tasks
-RUN_PRETRAIN_VIDEO_REC=1
-RUN_PRETRAIN_USER_PROFILE=1
-RUN_PRETRAIN_ITEM_UNDERSTAND=1
+RUN_PRETRAIN_VIDEO_REC=0
+RUN_PRETRAIN_USER_PROFILE=0
+RUN_PRETRAIN_ITEM_UNDERSTAND=0
 
 # SFT tasks
-RUN_SFT_VIDEO_REC=1
-RUN_SFT_INTERACTIVE_REC=1
-RUN_SFT_LABEL_COND_REC=1
-RUN_SFT_LABEL_PRED=1
-RUN_SFT_AD_REC=1
-RUN_SFT_PRODUCT_REC=1
-RUN_SFT_SID2CAPTION=1
-RUN_SFT_RECO_REASON=1
+RUN_SFT_VIDEO_REC=0
+RUN_SFT_INTERACTIVE_REC=0
+RUN_SFT_LABEL_COND_REC=0
+RUN_SFT_LABEL_PRED=0
+RUN_SFT_AD_REC=0
+RUN_SFT_PRODUCT_REC=0
+RUN_SFT_ITEM_UNDERSTAND=1
+RUN_SFT_REC_REASON=1
 
 # ============== Configuration ==============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-INPUT_METADATA="../../raw_data/onerec_data/onerec_bench_release.parquet"
-PID2SID_MAPPING="../../raw_data/onerec_data/video_ad_pid2sid.parquet"
-PRODUCT_PID2SID_MAPPING="../../raw_data/onerec_data/product_pid2sid.parquet"
-CAPTION_INPUT="../../raw_data/onerec_data/pid2caption.parquet"
+INPUT_METADATA="../../data/onerec_data/onerec_bench_release.parquet"
+PID2SID_MAPPING="../../data/onerec_data/video_ad_pid2sid.parquet"
+PRODUCT_PID2SID_MAPPING="../../data/onerec_data/product_pid2sid.parquet"
+CAPTION_INPUT="../../data/onerec_data/pid2caption.parquet"
 OUTPUT_BASE_DIR="../../output"
 
 SEED=42

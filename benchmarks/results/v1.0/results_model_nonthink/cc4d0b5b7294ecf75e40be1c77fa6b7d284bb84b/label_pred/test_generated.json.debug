@@ -1,0 +1,349 @@
+{
+  "model_name": "cc4d0b5b7294ecf75e40be1c77fa6b7d284bb84b",
+  "task_name": "label_pred",
+  "split": "test",
+  "total_time": 11.968746423721313,
+  "avg_time_per_sample": 1.1968746423721313,
+  "samples": {
+    "0": {
+      "prompt": "<|im_start|>system\n你是一个内容推荐专家，擅长分析用户的互动模式，预测用户的内容偏好。<|im_end|>\n<|im_start|>user\n用户的内容互动历史：\n用户深度浏览过以下内容：<|sid_begin|><s_a_5023><s_b_6790><s_c_7621><|sid_end|><|sid_begin|><s_a_3715><s_b_1357><s_c_94><|sid_end|><|sid_begin|><s_a_3482><s_b_5289><s_c_819><|sid_end|><|sid_begin|><s_a_2394><s_b_3093><s_c_7206><|sid_end|><|sid_begin|><s_a_7504><s_b_831><s_c_4826><|sid_end|><|sid_begin|><s_a_6994><s_b_2310><s_c_1178><|sid_end|><|sid_begin|><s_a_3190><s_b_7307><s_c_4727><|sid_end|><|sid_begin|><s_a_5023><s_b_632><s_c_4820><|sid_end|><|sid_begin|><s_a_2486><s_b_3707><s_c_3531><|sid_end|><|sid_begin|><s_a_3034><s_b_1612><s_c_7467><|sid_end|>\n用户表示认可的内容：<|sid_begin|><s_a_6745><s_b_5243><s_c_4984><|sid_end|><|sid_begin|><s_a_2394><s_b_3093><s_c_7206><|sid_end|><|sid_begin|><s_a_7504><s_b_831><s_c_4826><|sid_end|><|sid_begin|><s_a_6994><s_b_2310><s_c_1178><|sid_end|><|sid_begin|><s_a_20><s_b_6185><s_c_2279><|sid_end|><|sid_begin|><s_a_3190><s_b_7307><s_c_4727><|sid_end|><|sid_begin|><s_a_673><s_b_1694><s_c_2711><|sid_end|><|sid_begin|><s_a_3034><s_b_1612><s_c_7467><|sid_end|><|sid_begin|><s_a_1092><s_b_4689><s_c_4178><|sid_end|><|sid_begin|><s_a_5036><s_b_2310><s_c_3443><|sid_end|>\n用户会花时间仔细观看视频<|sid_begin|><s_a_6105><s_b_4894><s_c_1691><|sid_end|>吗？你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.14803060204360333, \"否\": 0.8518573367318486}"
+      ],
+      "ground_truth": "否",
+      "input_tokens": [
+        183
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        7.412945508956909
+      ],
+      "user_id": 1040,
+      "metadata": {
+        "row_index": 0,
+        "uid": 1040,
+        "uuid": "714cad92-5483-456d-95fc-98ad00963842"
+      },
+      "label": 0,
+      "predicted_prob": 0.14804719239327382,
+      "y_true": 0,
+      "y_score": 0.14804719239327382,
+      "parsed_probs": {
+        "是": 0.14803060204360333,
+        "否": 0.8518573367318486
+      },
+      "normalized_probs": {
+        "是": 0.14804719239327382,
+        "否": 0.8519528076067262
+      }
+    },
+    "1": {
+      "prompt": "<|im_start|>system\n你是一个内容推荐引擎，通过学习用户的互动历史，预测用户对新内容的反应。<|im_end|>\n<|im_start|>user\n用户的内容互动历史：\n用户长时观看过以下内容：<|sid_begin|><s_a_7443><s_b_3061><s_c_4671><|sid_end|><|sid_begin|><s_a_3502><s_b_991><s_c_5042><|sid_end|><|sid_begin|><s_a_4466><s_b_1596><s_c_2243><|sid_end|><|sid_begin|><s_a_918><s_b_4799><s_c_2649><|sid_end|><|sid_begin|><s_a_1148><s_b_6381><s_c_2485><|sid_end|><|sid_begin|><s_a_3449><s_b_3342><s_c_496><|sid_end|><|sid_begin|><s_a_4187><s_b_2363><s_c_124><|sid_end|><|sid_begin|><s_a_6167><s_b_2825><s_c_676><|sid_end|><|sid_begin|><s_a_6167><s_b_2651><s_c_6816><|sid_end|><|sid_begin|><s_a_7829><s_b_4298><s_c_7503><|sid_end|>\n用户喜欢的内容：<|sid_begin|><s_a_6267><s_b_446><s_c_7358><|sid_end|><|sid_begin|><s_a_756><s_b_6717><s_c_6761><|sid_end|><|sid_begin|><s_a_2128><s_b_4964><s_c_7692><|sid_end|><|sid_begin|><s_a_5462><s_b_2899><s_c_6039><|sid_end|><|sid_begin|><s_a_5975><s_b_1939><s_c_7433><|sid_end|><|sid_begin|><s_a_6456><s_b_3220><s_c_4107><|sid_end|><|sid_begin|><s_a_144><s_b_3131><s_c_3528><|sid_end|><|sid_begin|><s_a_2923><s_b_2926><s_c_6854><|sid_end|><|sid_begin|><s_a_3373><s_b_2333><s_c_4448><|sid_end|><|sid_begin|><s_a_2300><s_b_7457><s_c_566><|sid_end|>\n作者被用户关注的内容：<|sid_begin|><s_a_144><s_b_3131><s_c_3528><|sid_end|>\n用户向他人推荐的内容：<|sid_begin|><s_a_6306><s_b_3243><s_c_2690><|sid_end|><|sid_begin|><s_a_6234><s_b_5794><s_c_3785><|sid_end|>\n视频<|sid_begin|><s_a_5773><s_b_5753><s_c_4826><|sid_end|>能够吸引用户长时间观看吗？你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.11919776854192105, \"否\": 0.8807590379966019}"
+      ],
+      "ground_truth": "否",
+      "input_tokens": [
+        214
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        5.812278509140015
+      ],
+      "user_id": 1214,
+      "metadata": {
+        "row_index": 1,
+        "uid": 1214,
+        "uuid": "97904ebb-6b90-4785-a7ab-daf92dd5a882"
+      },
+      "label": 0,
+      "predicted_prob": 0.11920291732853863,
+      "y_true": 0,
+      "y_score": 0.11920291732853863,
+      "parsed_probs": {
+        "是": 0.11919776854192105,
+        "否": 0.8807590379966019
+      },
+      "normalized_probs": {
+        "是": 0.11920291732853863,
+        "否": 0.8807970826714614
+      }
+    },
+    "2": {
+      "prompt": "<|im_start|>system\n你是一个用户行为分析助手，专注于理解用户的兴趣偏好，并推荐相关内容。<|im_end|>\n<|im_start|>user\n用户对以下内容产生了不同的互动：\n用户长时观看过以下内容：<|sid_begin|><s_a_6672><s_b_5917><s_c_5490><|sid_end|><|sid_begin|><s_a_5930><s_b_3058><s_c_4879><|sid_end|><|sid_begin|><s_a_1722><s_b_2486><s_c_3445><|sid_end|><|sid_begin|><s_a_5022><s_b_3020><s_c_1319><|sid_end|><|sid_begin|><s_a_3580><s_b_8108><s_c_2734><|sid_end|><|sid_begin|><s_a_7400><s_b_2600><s_c_4724><|sid_end|><|sid_begin|><s_a_3269><s_b_528><s_c_511><|sid_end|><|sid_begin|><s_a_1687><s_b_1763><s_c_2473><|sid_end|><|sid_begin|><s_a_5993><s_b_5158><s_c_2019><|sid_end|><|sid_begin|><s_a_6079><s_b_7125><s_c_7285><|sid_end|>\n获得用户点赞的内容：<|sid_begin|><s_a_7400><s_b_5197><s_c_5386><|sid_end|><|sid_begin|><s_a_92><s_b_1796><s_c_1322><|sid_end|><|sid_begin|><s_a_6799><s_b_227><s_c_7935><|sid_end|><|sid_begin|><s_a_1803><s_b_7046><s_c_7972><|sid_end|><|sid_begin|><s_a_92><s_b_3450><s_c_4436><|sid_end|><|sid_begin|><s_a_8133><s_b_6904><s_c_711><|sid_end|><|sid_begin|><s_a_2372><s_b_6359><s_c_4436><|sid_end|><|sid_begin|><s_a_69><s_b_7046><s_c_5033><|sid_end|><|sid_begin|><s_a_92><s_b_5197><s_c_711><|sid_end|><|sid_begin|><s_a_3556><s_b_2600><s_c_4639><|sid_end|>\n用户向他人推荐的内容：<|sid_begin|><s_a_5297><s_b_1956><s_c_5347><|sid_end|>\n请判断用户是否会长时观看视频<|sid_begin|><s_a_2432><s_b_1135><s_c_5851><|sid_end|>？你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.11919080609943111, \"否\": 0.880707526498332}"
+      ],
+      "ground_truth": "否",
+      "input_tokens": [
+        198
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        7.412945508956909
+      ],
+      "user_id": 1274,
+      "metadata": {
+        "row_index": 2,
+        "uid": 1274,
+        "uuid": "7215fe08-aeed-4563-91a2-86781a6b639f"
+      },
+      "label": 0,
+      "predicted_prob": 0.11920292515117027,
+      "y_true": 0,
+      "y_score": 0.11920292515117027,
+      "parsed_probs": {
+        "是": 0.11919080609943111,
+        "否": 0.880707526498332
+      },
+      "normalized_probs": {
+        "是": 0.11920292515117027,
+        "否": 0.8807970748488297
+      }
+    },
+    "3": {
+      "prompt": "<|im_start|>system\n你是一个个性化推荐系统，能够基于用户的历史互动行为，预测用户未来可能产生的互动。<|im_end|>\n<|im_start|>user\n用户的内容互动历史：\n用户长时观看过以下内容：<|sid_begin|><s_a_3715><s_b_6543><s_c_1103><|sid_end|><|sid_begin|><s_a_1833><s_b_4605><s_c_6933><|sid_end|><|sid_begin|><s_a_6563><s_b_6490><s_c_4864><|sid_end|><|sid_begin|><s_a_6988><s_b_1383><s_c_7621><|sid_end|><|sid_begin|><s_a_1745><s_b_1733><s_c_6754><|sid_end|><|sid_begin|><s_a_7185><s_b_7935><s_c_2354><|sid_end|><|sid_begin|><s_a_5186><s_b_4796><s_c_4074><|sid_end|><|sid_begin|><s_a_7478><s_b_2549><s_c_384><|sid_end|><|sid_begin|><s_a_4279><s_b_5364><s_c_2189><|sid_end|><|sid_begin|><s_a_3477><s_b_4385><s_c_2554><|sid_end|>\n用户喜欢的内容：<|sid_begin|><s_a_7291><s_b_1369><s_c_3863><|sid_end|><|sid_begin|><s_a_6234><s_b_862><s_c_8158><|sid_end|><|sid_begin|><s_a_2642><s_b_419><s_c_601><|sid_end|><|sid_begin|><s_a_5291><s_b_6051><s_c_7852><|sid_end|><|sid_begin|><s_a_1745><s_b_1733><s_c_6754><|sid_end|><|sid_begin|><s_a_4599><s_b_76><s_c_8182><|sid_end|><|sid_begin|><s_a_5186><s_b_4796><s_c_4074><|sid_end|><|sid_begin|><s_a_4279><s_b_5364><s_c_2189><|sid_end|><|sid_begin|><s_a_3477><s_b_4385><s_c_2554><|sid_end|>\n作者被用户关注的内容：<|sid_begin|><s_a_7291><s_b_1369><s_c_3863><|sid_end|><|sid_begin|><s_a_6234><s_b_862><s_c_8158><|sid_end|><|sid_begin|><s_a_2642><s_b_419><s_c_601><|sid_end|><|sid_begin|><s_a_5291><s_b_6051><s_c_7852><|sid_end|><|sid_begin|><s_a_1745><s_b_1733><s_c_6754><|sid_end|><|sid_begin|><s_a_4599><s_b_76><s_c_8182><|sid_end|><|sid_begin|><s_a_5186><s_b_4796><s_c_4074><|sid_end|><|sid_begin|><s_a_4279><s_b_5364><s_c_2189><|sid_end|><|sid_begin|><s_a_3477><s_b_4385><s_c_2554><|sid_end|>\n视频<|sid_begin|><s_a_6767><s_b_7948><s_c_4701><|sid_end|>能够吸引用户长时间观看吗？你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.1824137164277782, \"否\": 0.81752152264806}"
+      ],
+      "ground_truth": "否",
+      "input_tokens": [
+        232
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        5.812278509140015
+      ],
+      "user_id": 117,
+      "metadata": {
+        "row_index": 3,
+        "uid": 117,
+        "uuid": "909ff0f2-d599-4c85-aafd-8595a860fd73"
+      },
+      "label": 0,
+      "predicted_prob": 0.18242553047372237,
+      "y_true": 0,
+      "y_score": 0.18242553047372237,
+      "parsed_probs": {
+        "是": 0.1824137164277782,
+        "否": 0.81752152264806
+      },
+      "normalized_probs": {
+        "是": 0.18242553047372237,
+        "否": 0.8175744695262775
+      }
+    },
+    "4": {
+      "prompt": "<|im_start|>system\n你是一个用户行为分析助手，专注于理解用户的兴趣偏好，并推荐相关内容。<|im_end|>\n<|im_start|>user\n用户的互动记录如下：\n用户花时间仔细观看的内容：<|sid_begin|><s_a_5686><s_b_6021><s_c_4928><|sid_end|><|sid_begin|><s_a_1483><s_b_4099><s_c_8073><|sid_end|><|sid_begin|><s_a_7316><s_b_2053><s_c_4341><|sid_end|><|sid_begin|><s_a_6395><s_b_4359><s_c_4552><|sid_end|><|sid_begin|><s_a_983><s_b_7530><s_c_4321><|sid_end|><|sid_begin|><s_a_3735><s_b_5627><s_c_1552><|sid_end|><|sid_begin|><s_a_4600><s_b_5355><s_c_2><|sid_end|><|sid_begin|><s_a_2529><s_b_4408><s_c_2996><|sid_end|><|sid_begin|><s_a_4426><s_b_6126><s_c_3022><|sid_end|><|sid_begin|><s_a_513><s_b_2858><s_c_274><|sid_end|>\n用户喜欢的内容：<|sid_begin|><s_a_7914><s_b_2828><s_c_7995><|sid_end|><|sid_begin|><s_a_4104><s_b_1796><s_c_1197><|sid_end|><|sid_begin|><s_a_4600><s_b_5197><s_c_3052><|sid_end|><|sid_begin|><s_a_1028><s_b_3280><s_c_975><|sid_end|><|sid_begin|><s_a_8031><s_b_2405><s_c_7839><|sid_end|><|sid_begin|><s_a_5686><s_b_6021><s_c_4928><|sid_end|><|sid_begin|><s_a_1483><s_b_4099><s_c_8073><|sid_end|><|sid_begin|><s_a_7316><s_b_2053><s_c_4341><|sid_end|><|sid_begin|><s_a_6395><s_b_4359><s_c_4552><|sid_end|><|sid_begin|><s_a_3208><s_b_4681><s_c_1636><|sid_end|>\n用户对其创作者感兴趣的内容：<|sid_begin|><s_a_4482><s_b_1703><s_c_7099><|sid_end|><|sid_begin|><s_a_7372><s_b_4301><s_c_1036><|sid_end|><|sid_begin|><s_a_5135><s_b_1041><s_c_7636><|sid_end|><|sid_begin|><s_a_3735><s_b_4452><s_c_6856><|sid_end|><|sid_begin|><s_a_5135><s_b_4159><s_c_1636><|sid_end|><|sid_begin|><s_a_4880><s_b_7783><s_c_6848><|sid_end|><|sid_begin|><s_a_8047><s_b_5674><s_c_7800><|sid_end|><|sid_begin|><s_a_6180><s_b_448><s_c_234><|sid_end|><|sid_begin|><s_a_1028><s_b_3280><s_c_975><|sid_end|><|sid_begin|><s_a_8031><s_b_2405><s_c_7839><|sid_end|>\n用户向他人推荐的内容：<|sid_begin|><s_a_6395><s_b_3417><s_c_4915><|sid_end|>\n视频<|sid_begin|><s_a_5954><s_b_2109><s_c_5817><|sid_end|>能够吸引用户长时间观看吗？你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.07585596502690013, \"否\": 0.9241148289383527}"
+      ],
+      "ground_truth": "否",
+      "input_tokens": [
+        249
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        7.412945508956909
+      ],
+      "user_id": 323,
+      "metadata": {
+        "row_index": 4,
+        "uid": 323,
+        "uuid": "a1a55b26-d1d5-4f2d-ad67-ba399aaa18f3"
+      },
+      "label": 0,
+      "predicted_prob": 0.07585818054355693,
+      "y_true": 0,
+      "y_score": 0.07585818054355693,
+      "parsed_probs": {
+        "是": 0.07585596502690013,
+        "否": 0.9241148289383527
+      },
+      "normalized_probs": {
+        "是": 0.07585818054355693,
+        "否": 0.924141819456443
+      }
+    },
+    "5": {
+      "prompt": "<|im_start|>system\n你是一个内容推荐专家，擅长分析用户的互动模式，预测用户的内容偏好。<|im_end|>\n<|im_start|>user\n用户的内容互动历史：\n用户深度浏览过以下内容：<|sid_begin|><s_a_3751><s_b_464><s_c_2858><|sid_end|><|sid_begin|><s_a_102><s_b_7202><s_c_134><|sid_end|><|sid_begin|><s_a_4787><s_b_5190><s_c_310><|sid_end|><|sid_begin|><s_a_3556><s_b_7400><s_c_7839><|sid_end|><|sid_begin|><s_a_7096><s_b_7563><s_c_2228><|sid_end|><|sid_begin|><s_a_7886><s_b_991><s_c_7350><|sid_end|><|sid_begin|><s_a_238><s_b_495><s_c_3182><|sid_end|><|sid_begin|><s_a_5238><s_b_88><s_c_2477><|sid_end|><|sid_begin|><s_a_4869><s_b_7082><s_c_7803><|sid_end|><|sid_begin|><s_a_3721><s_b_5929><s_c_6078><|sid_end|>\n用户喜欢的内容：<|sid_begin|><s_a_6156><s_b_7895><s_c_5214><|sid_end|><|sid_begin|><s_a_285><s_b_1648><s_c_1805><|sid_end|><|sid_begin|><s_a_3179><s_b_4852><s_c_6234><|sid_end|><|sid_begin|><s_a_5926><s_b_7072><s_c_323><|sid_end|><|sid_begin|><s_a_3600><s_b_5794><s_c_6018><|sid_end|><|sid_begin|><s_a_838><s_b_1621><s_c_384><|sid_end|><|sid_begin|><s_a_398><s_b_7400><s_c_1113><|sid_end|><|sid_begin|><s_a_1354><s_b_6577><s_c_4915><|sid_end|><|sid_begin|><s_a_3556><s_b_7400><s_c_7839><|sid_end|><|sid_begin|><s_a_6180><s_b_6134><s_c_2769><|sid_end|>\n用户对其创作者感兴趣的内容：<|sid_begin|><s_a_3600><s_b_5794><s_c_6018><|sid_end|><|sid_begin|><s_a_322><s_b_5272><s_c_5732><|sid_end|>\n用户转发过以下内容：<|sid_begin|><s_a_5119><s_b_7335><s_c_5661><|sid_end|>\n用户会完整观看视频<|sid_begin|><s_a_5669><s_b_6550><s_c_917><|sid_end|>吗？你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.11919486984298147, \"否\": 0.8807376718426206}"
+      ],
+      "ground_truth": "否",
+      "input_tokens": [
+        209
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        5.812278509140015
+      ],
+      "user_id": 1410,
+      "metadata": {
+        "row_index": 5,
+        "uid": 1410,
+        "uuid": "2aae87c6-7177-40e3-a313-baca2b643aeb"
+      },
+      "label": 0,
+      "predicted_prob": 0.11920291107043361,
+      "y_true": 0,
+      "y_score": 0.11920291107043361,
+      "parsed_probs": {
+        "是": 0.11919486984298147,
+        "否": 0.8807376718426206
+      },
+      "normalized_probs": {
+        "是": 0.11920291107043361,
+        "否": 0.8807970889295664
+      }
+    },
+    "6": {
+      "prompt": "<|im_start|>system\n你是一个内容推荐引擎，通过学习用户的互动历史，预测用户对新内容的反应。<|im_end|>\n<|im_start|>user\n用户的互动记录如下：\n用户长时观看过以下内容：<|sid_begin|><s_a_4604><s_b_6054><s_c_1175><|sid_end|><|sid_begin|><s_a_1403><s_b_4960><s_c_2283><|sid_end|><|sid_begin|><s_a_7814><s_b_324><s_c_2441><|sid_end|><|sid_begin|><s_a_2066><s_b_5624><s_c_5976><|sid_end|><|sid_begin|><s_a_6539><s_b_1023><s_c_2735><|sid_end|><|sid_begin|><s_a_5020><s_b_6241><s_c_4105><|sid_end|><|sid_begin|><s_a_7327><s_b_1833><s_c_2253><|sid_end|><|sid_begin|><s_a_7398><s_b_4932><s_c_5704><|sid_end|><|sid_begin|><s_a_248><s_b_1850><s_c_7995><|sid_end|><|sid_begin|><s_a_106><s_b_2752><s_c_1700><|sid_end|>\n用户点赞过以下内容：<|sid_begin|><s_a_1860><s_b_2053><s_c_7462><|sid_end|><|sid_begin|><s_a_5384><s_b_3667><s_c_7852><|sid_end|><|sid_begin|><s_a_4438><s_b_7455><s_c_6125><|sid_end|><|sid_begin|><s_a_5950><s_b_3992><s_c_6816><|sid_end|><|sid_begin|><s_a_7372><s_b_6377><s_c_4677><|sid_end|><|sid_begin|><s_a_7814><s_b_324><s_c_2441><|sid_end|><|sid_begin|><s_a_632><s_b_162><s_c_4938><|sid_end|><|sid_begin|><s_a_3252><s_b_3992><s_c_6757><|sid_end|><|sid_begin|><s_a_5786><s_b_5627><s_c_7370><|sid_end|><|sid_begin|><s_a_4393><s_b_2751><s_c_3525><|sid_end|>\n作者被用户关注的内容：<|sid_begin|><s_a_1343><s_b_3129><s_c_1432><|sid_end|>\n用户转发过以下内容：<|sid_begin|><s_a_2924><s_b_4540><s_c_6105><|sid_end|>\n预测用户是否会深度观看视频<|sid_begin|><s_a_3493><s_b_6866><s_c_7669><|sid_end|>。你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.11919526769944652, \"否\": 0.8807404541379871}"
+      ],
+      "ground_truth": "是",
+      "input_tokens": [
+        210
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        7.412945508956909
+      ],
+      "user_id": 294,
+      "metadata": {
+        "row_index": 6,
+        "uid": 294,
+        "uuid": "0382fe53-9662-4fd9-b059-fb0ee9800f62"
+      },
+      "label": 1,
+      "predicted_prob": 0.11920292984474948,
+      "y_true": 1,
+      "y_score": 0.11920292984474948,
+      "parsed_probs": {
+        "是": 0.11919526769944652,
+        "否": 0.8807404541379871
+      },
+      "normalized_probs": {
+        "是": 0.11920292984474948,
+        "否": 0.8807970701552505
+      }
+    },
+    "7": {
+      "prompt": "<|im_start|>system\n你是一个内容推荐专家，擅长分析用户的互动模式，预测用户的内容偏好。<|im_end|>\n<|im_start|>user\n用户对以下内容产生了不同的互动：\n用户完整观看过的内容：<|sid_begin|><s_a_7335><s_b_859><s_c_3374><|sid_end|><|sid_begin|><s_a_8085><s_b_5898><s_c_8001><|sid_end|><|sid_begin|><s_a_39><s_b_636><s_c_4772><|sid_end|><|sid_begin|><s_a_6678><s_b_2938><s_c_819><|sid_end|><|sid_begin|><s_a_2752><s_b_8077><s_c_1702><|sid_end|><|sid_begin|><s_a_781><s_b_323><s_c_656><|sid_end|><|sid_begin|><s_a_2752><s_b_3382><s_c_2473><|sid_end|><|sid_begin|><s_a_8175><s_b_4960><s_c_2430><|sid_end|><|sid_begin|><s_a_5802><s_b_5187><s_c_5235><|sid_end|><|sid_begin|><s_a_3492><s_b_8134><s_c_7173><|sid_end|>\n获得用户点赞的内容：<|sid_begin|><s_a_2207><s_b_7874><s_c_726><|sid_end|><|sid_begin|><s_a_2752><s_b_1803><s_c_7975><|sid_end|><|sid_begin|><s_a_3556><s_b_2865><s_c_5954><|sid_end|><|sid_begin|><s_a_1260><s_b_7592><s_c_1259><|sid_end|><|sid_begin|><s_a_2602><s_b_5653><s_c_1887><|sid_end|><|sid_begin|><s_a_4467><s_b_4745><s_c_89><|sid_end|><|sid_begin|><s_a_4885><s_b_419><s_c_7289><|sid_end|><|sid_begin|><s_a_6759><s_b_6667><s_c_503><|sid_end|><|sid_begin|><s_a_2486><s_b_7857><s_c_2087><|sid_end|><|sid_begin|><s_a_121><s_b_2320><s_c_4757><|sid_end|>\n预测用户是否会深度观看视频<|sid_begin|><s_a_587><s_b_4676><s_c_5309><|sid_end|>。你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.04208295387348141, \"否\": 0.9578035226156562}"
+      ],
+      "ground_truth": "否",
+      "input_tokens": [
+        183
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        5.812278509140015
+      ],
+      "user_id": 171,
+      "metadata": {
+        "row_index": 7,
+        "uid": 171,
+        "uuid": "dd2c24a5-eef5-4a91-be0a-8f7bb7c54d9a"
+      },
+      "label": 0,
+      "predicted_prob": 0.04208773182056192,
+      "y_true": 0,
+      "y_score": 0.04208773182056192,
+      "parsed_probs": {
+        "是": 0.04208295387348141,
+        "否": 0.9578035226156562
+      },
+      "normalized_probs": {
+        "是": 0.04208773182056192,
+        "否": 0.9579122681794381
+      }
+    },
+    "8": {
+      "prompt": "<|im_start|>system\n你是一个内容推荐引擎，通过学习用户的互动历史，预测用户对新内容的反应。<|im_end|>\n<|im_start|>user\n以下是用户的历史互动行为：\n用户完整观看过的内容：<|sid_begin|><s_a_2669><s_b_7031><s_c_377><|sid_end|><|sid_begin|><s_a_7926><s_b_5053><s_c_3780><|sid_end|><|sid_begin|><s_a_7971><s_b_1431><s_c_6993><|sid_end|><|sid_begin|><s_a_3753><s_b_7791><s_c_7503><|sid_end|><|sid_begin|><s_a_819><s_b_7239><s_c_759><|sid_end|><|sid_begin|><s_a_4995><s_b_2108><s_c_3070><|sid_end|><|sid_begin|><s_a_1097><s_b_2909><s_c_1298><|sid_end|><|sid_begin|><s_a_4225><s_b_981><s_c_6468><|sid_end|><|sid_begin|><s_a_4971><s_b_5014><s_c_7659><|sid_end|><|sid_begin|><s_a_4888><s_b_7818><s_c_2134><|sid_end|>\n获得用户点赞的内容：<|sid_begin|><s_a_4921><s_b_1137><s_c_149><|sid_end|>\n用户会花时间仔细观看视频<|sid_begin|><s_a_3229><s_b_1194><s_c_7759><|sid_end|>吗？你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.14803536670846523, \"否\": 0.8518846666277392}"
+      ],
+      "ground_truth": "否",
+      "input_tokens": [
+        141
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        7.412945508956909
+      ],
+      "user_id": 1068,
+      "metadata": {
+        "row_index": 8,
+        "uid": 1068,
+        "uuid": "8dadb000-e474-4052-9ba5-60ffd44f87d2"
+      },
+      "label": 0,
+      "predicted_prob": 0.1480472055495773,
+      "y_true": 0,
+      "y_score": 0.1480472055495773,
+      "parsed_probs": {
+        "是": 0.14803536670846523,
+        "否": 0.8518846666277392
+      },
+      "normalized_probs": {
+        "是": 0.1480472055495773,
+        "否": 0.8519527944504227
+      }
+    },
+    "9": {
+      "prompt": "<|im_start|>system\n你是一个内容推荐专家，擅长分析用户的互动模式，预测用户的内容偏好。<|im_end|>\n<|im_start|>user\n以下是用户的历史互动行为：\n用户完整观看过的内容：<|sid_begin|><s_a_2490><s_b_5728><s_c_6472><|sid_end|><|sid_begin|><s_a_3271><s_b_3902><s_c_134><|sid_end|><|sid_begin|><s_a_4469><s_b_4365><s_c_2262><|sid_end|><|sid_begin|><s_a_1244><s_b_5380><s_c_6555><|sid_end|><|sid_begin|><s_a_6460><s_b_1025><s_c_2108><|sid_end|><|sid_begin|><s_a_5325><s_b_3606><s_c_1155><|sid_end|><|sid_begin|><s_a_3278><s_b_376><s_c_656><|sid_end|><|sid_begin|><s_a_6260><s_b_5240><s_c_2991><|sid_end|><|sid_begin|><s_a_219><s_b_5400><s_c_6903><|sid_end|><|sid_begin|><s_a_1177><s_b_1535><s_c_1420><|sid_end|>\n用户喜欢的内容：<|sid_begin|><s_a_5484><s_b_6713><s_c_964><|sid_end|><|sid_begin|><s_a_1260><s_b_3606><s_c_2018><|sid_end|><|sid_begin|><s_a_4438><s_b_4944><s_c_5768><|sid_end|><|sid_begin|><s_a_3131><s_b_6511><s_c_4341><|sid_end|><|sid_begin|><s_a_4256><s_b_1121><s_c_3596><|sid_end|><|sid_begin|><s_a_2265><s_b_6343><s_c_512><|sid_end|><|sid_begin|><s_a_1901><s_b_6540><s_c_1676><|sid_end|><|sid_begin|><s_a_6766><s_b_6635><s_c_1927><|sid_end|><|sid_begin|><s_a_5926><s_b_2650><s_c_6382><|sid_end|><|sid_begin|><s_a_6832><s_b_7646><s_c_8087><|sid_end|>\n用户向他人推荐的内容：<|sid_begin|><s_a_1669><s_b_536><s_c_4546><|sid_end|><|sid_begin|><s_a_1625><s_b_6121><s_c_1870><|sid_end|>\n请判断用户是否会长时观看视频<|sid_begin|><s_a_3299><s_b_3027><s_c_7133><|sid_end|>？你的回答只需包含\"是\"或\"否\"。/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "generations": [
+        "{\"是\": 0.11919452882421125, \"否\": 0.8807349945478303}"
+      ],
+      "ground_truth": "否",
+      "input_tokens": [
+        199
+      ],
+      "output_tokens": [
+        1
+      ],
+      "times": [
+        5.812278509140015
+      ],
+      "user_id": 2060,
+      "metadata": {
+        "row_index": 9,
+        "uid": 2060,
+        "uuid": "f69ed496-177a-49a0-8971-5f1225cdb7d1"
+      },
+      "label": 0,
+      "predicted_prob": 0.11920292984474948,
+      "y_true": 0,
+      "y_score": 0.11920292984474948,
+      "parsed_probs": {
+        "是": 0.11919452882421125,
+        "否": 0.8807349945478303
+      },
+      "normalized_probs": {
+        "是": 0.11920292984474948,
+        "否": 0.8807970701552505
+      }
+    }
+  }
+}

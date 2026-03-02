@@ -116,7 +116,7 @@ On the **Amazon Benchmark** (10 datasets), OpenOneRec demonstrates exceptional z
 | Tools | 0.0437 | 0.0344 | 0.0438 | **0.0593** |
 | Toys | 0.0658 | 0.0527 | 0.0549 | **0.0953** |
 
-*Metric: Recall@10. Ours refers to OneRec-Foundation with text-augmented itemic tokens strategy.*
+*Metric: Recall@10. Ours refers to OneRec-Foundation with text-augmented itemic tokens strategy. For implementation details, please refer to [GRLM](https://github.com/ZY0025/GRLM).*
 
 ## 🚀 Quick Start
 
@@ -213,3 +213,27 @@ OpenOneRec is built upon and inspired by the open-source ecosystem. We would lik
 - **VeRL & PyTorch distributed training**: for the training infrastructure and scalable primitives (e.g., **FSDP**) used in post-training and large-scale runs.
 
 We sincerely thank these projects for their outstanding work.
+
+
+# Others
+- thinking template：
+1. 好的，我现在需要处理/分析...（任务陈述）
+2. 首先，分析用户的历史记录... 用户观看了[视频类型]，点击了[广告类型]...（数据回顾）
+3. 接下来，分析用户的兴趣/需求... 用户对[领域]感兴趣，可能需要[具体服务/产品]...（需求推理）
+4. 然后/此外，考虑推荐策略... 应推荐与[兴趣]相关的广告，例如[具体广告类型]...（策略制定）
+5. 最后/总结来说，用户可能对[核心点]感兴趣，因此推荐...（总结）
+   
+USER_PROMPT_TEMPLATE = """{user_profile}
+
+[历史观看视频内容]
+{gsu_caption}
+
+[用户点击下一个视频内容]
+{target_video_caption}
+
+请在思考的时候分析总结用户兴趣，重点根据用户观看视频内容进行推理，给出下一个点击的理由及视频的基本内容，下一个点击视频需要与给定的一致，注意虽然给出了下一个点击的视频但应该体现出推理得到而不是直接知道的。
+最后再用一段话输出精炼的推理过程。
+生成格式严格按照两大部分，标题分别是：预测分析；精炼推理。
+"""
+
+据gemini所说，应该来自R1-Distill-SFT推理数据集，该数据集被包含在通用训练语料当中

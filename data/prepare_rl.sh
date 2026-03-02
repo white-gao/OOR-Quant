@@ -15,9 +15,10 @@ INTERACTIVE_REC=${REC_DATA_PATH}/sft_interactive_rec.parquet
 LABEL_COND_REC=${REC_DATA_PATH}/sft_label_cond_rec.parquet
 
 # Output configuration
-OUTPUT_DIR="../output/rl_data"
-TEST_SIZE=1000
-SEED=42
+REC_DATA_PATH="data/onerec_data"                  # OneRec dataset path
+OUTPUT_DIR="./output/rl_data"                     # Output directory path
+TEST_SIZE=1000                                     # Number of test samples per subtask
+SEED=42                                            # Random seed
 ENGINE="pyarrow"
 
 # Get script directory
