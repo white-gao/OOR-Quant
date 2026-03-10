@@ -49,13 +49,14 @@ class VllmWorker:
         """
         self.worker_id = worker_id
         self.gpu_ids = gpu_ids
-        
-        # Set environment variable so current process only sees specified GPUs
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_ids))
-        
+
         opt_status = "optimized" if enable_optimizations else "standard"
         gpu_str = ",".join(map(str, gpu_ids))
-        print(f"  [Worker {worker_id}] Initializing ({opt_status})... (GPU {gpu_str}, TP={tensor_parallel_size})")
+        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "ALL")
+        print(
+            f"  [Worker {worker_id}] Initializing ({opt_status})... "
+            f"(logical GPUs {gpu_str}, CUDA_VISIBLE_DEVICES={visible_devices}, TP={tensor_parallel_size})"
+        )
         
         # Initialize vLLM
         vllm_kwargs = {
@@ -102,6 +103,31 @@ class VllmWorker:
         except Exception as e:
             print(f"  [Worker {self.worker_id}] Warning: Failed to count parameters: {e}")
             return None
+
+    def shutdown(self) -> bool:
+        """
+        Best-effort graceful cleanup for vLLM resources in the actor process.
+        """
+        try:
+            if hasattr(self, "llm"):
+                del self.llm
+            self.tokenizer = None
+
+            import gc
+            gc.collect()
+
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+            print(f"  [Worker {self.worker_id}] ✓ Graceful shutdown completed")
+            return True
+        except Exception as e:
+            print(f"  [Worker {self.worker_id}] ⚠ Graceful shutdown failed: {e}")
+            return False
     
     def generate_batch(
         self,
@@ -550,43 +576,51 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
         
         # Create Ray remote class with dynamic GPU count and scheduling strategy
         # Use scheduling_strategy to place workers on specific nodes
-        for i, (gpu_group, node_id) in enumerate(zip(self.worker_gpu_groups, self.worker_node_assignments)):
-            # Create worker with node placement constraint
-            VllmWorkerRemote = ray.remote(num_gpus=tensor_parallel_size)(VllmWorker)
-            
-            # If we have node assignment, use scheduling strategy
-            if node_id is not None:
-                from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-                scheduling_strategy = NodeAffinitySchedulingStrategy(
-                    node_id=node_id,
-                    soft=False  # Hard constraint: must be on this node
-                )
-                worker = VllmWorkerRemote.options(
-                    scheduling_strategy=scheduling_strategy
-                ).remote(
-                    worker_id=i,
-                    model_path=model_path,
-                    gpu_ids=gpu_group,
-                    enable_optimizations=enable_optimizations,
-                    **vllm_kwargs
-                )
-            else:
-                # No node constraint, let Ray decide
-                worker = VllmWorkerRemote.remote(
-                    worker_id=i,
-                    model_path=model_path,
-                    gpu_ids=gpu_group,
-                    enable_optimizations=enable_optimizations,
-                    **vllm_kwargs
-                )
-            self.workers.append(worker)
-        
-        # Wait for all Workers to initialize
-        console.print(
-            "  Waiting for all Workers to initialize...\n\n",
-            style=subhead_style_2,
-        )
-        ray.get([worker.generate_batch.remote({}, {}) for worker in self.workers])
+        try:
+            for i, (gpu_group, node_id) in enumerate(zip(self.worker_gpu_groups, self.worker_node_assignments)):
+                # Create worker with node placement constraint
+                VllmWorkerRemote = ray.remote(num_gpus=tensor_parallel_size)(VllmWorker)
+
+                # If we have node assignment, use scheduling strategy
+                if node_id is not None:
+                    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+                    scheduling_strategy = NodeAffinitySchedulingStrategy(
+                        node_id=node_id,
+                        soft=False  # Hard constraint: must be on this node
+                    )
+                    worker = VllmWorkerRemote.options(
+                        scheduling_strategy=scheduling_strategy
+                    ).remote(
+                        worker_id=i,
+                        model_path=model_path,
+                        gpu_ids=gpu_group,
+                        enable_optimizations=enable_optimizations,
+                        **vllm_kwargs
+                    )
+                else:
+                    # No node constraint, let Ray decide
+                    worker = VllmWorkerRemote.remote(
+                        worker_id=i,
+                        model_path=model_path,
+                        gpu_ids=gpu_group,
+                        enable_optimizations=enable_optimizations,
+                        **vllm_kwargs
+                    )
+                self.workers.append(worker)
+
+            # Wait for all Workers to initialize
+            console.print(
+                "  Waiting for all Workers to initialize...\n\n",
+                style=subhead_style_2,
+            )
+            ray.get([worker.generate_batch.remote({}, {}) for worker in self.workers])
+        except Exception:
+            console.print(
+                "  [red]Worker initialization failed, cleaning up partial Ray resources...[/red]",
+                style=err_style,
+            )
+            self.cleanup()
+            raise
         
         console.print(
             f"✓ All Workers initialized successfully\n",

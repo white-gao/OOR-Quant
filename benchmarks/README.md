@@ -74,16 +74,16 @@ bash eval_script.sh <model_path> <result_name> <enable_thinking>
 
 **Examples**:
 ```bash
-# Without thinking mode
+# Without thinking mode, path: /home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/cc4d0b5b7294ecf75e40be1c77fa6b7d284bb84b
 bash eval_script.sh \
-    /path/to/model \
+    /home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/cc4d0b5b7294ecf75e40be1c77fa6b7d284bb84b \
     model_nonthink \
     false
 
 # With thinking mode
 bash eval_script.sh \
     /path/to/model \
-    model_think \
+    model_think_test \
     true
 ```
 

@@ -866,6 +866,12 @@ class RayMixin:
             f"  Worker GPU assignments:",
             style=subhead_style_2,
         )
+        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cuda_visible_devices:
+            console.print(
+                f"  Driver CUDA_VISIBLE_DEVICES: {cuda_visible_devices} (Ray worker GPU IDs are logical indices)",
+                style=subhead_style_2,
+            )
         for i, (gpu_group, node_id) in enumerate(zip(self.worker_gpu_groups, self.worker_node_assignments)):
             # Find node IP for this node_id
             node_ip = "unknown"
@@ -897,6 +903,14 @@ class RayMixin:
             if hasattr(self, 'workers') and self.workers:
                 for i, worker in enumerate(self.workers):
                     try:
+                        # Try graceful shutdown first to let vLLM release child processes.
+                        try:
+                            ray.get(worker.shutdown.remote(), timeout=20)
+                        except Exception as shutdown_err:
+                            console.print(
+                                f"  ⚠ Worker {i} graceful shutdown skipped/failed: {shutdown_err}",
+                                style=warning_style,
+                            )
                         ray.kill(worker)
                         console.print(
                             f"  ✓ Worker {i} terminated",
