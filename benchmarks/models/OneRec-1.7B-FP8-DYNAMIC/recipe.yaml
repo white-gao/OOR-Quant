@@ -1,0 +1,7 @@
+default_stage:
+  default_modifiers:
+    QuantizationModifier:
+      targets: [Linear]
+      ignore: [lm_head]
+      scheme: FP8_DYNAMIC
+      bypass_divisibility_checks: false
