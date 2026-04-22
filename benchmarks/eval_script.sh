@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=2
 export BENCHMARK_BASE_DIR="."
 export BENCHMARK_DATA_DIR="../data/onerec_data/benchmark_data"
 export DATA_VERSION="v1.0"
@@ -12,7 +12,8 @@ MODEL_PATH=$1
 VERSION="${VERSION:-v1.0}"
 BASE_OUTPUT_DIR="${BENCHMARK_BASE_DIR}/results/${VERSION}/results_${2}"
 BASE_LOG_NAME="${BENCHMARK_BASE_DIR}/auto_eval_logs/${VERSION}/$2"
-ENABLE_THINKING=$3
+ENABLE_THINKING="${3:-false}"
+SAMPLE_SIZE="${SAMPLE_SIZE:-${4:-}}"
 
 # Read configuration from environment variables (set by eval_script.py)
 # Fallback to hardcoded paths if not set
@@ -21,8 +22,12 @@ DATA_VERSION="${DATA_VERSION:-v1.0}"
 
 BENCHMARK_DATA_DIR="${BENCHMARK_DATA_DIR:-${BENCHMARK_BASE_DIR}/data_${DATA_VERSION}}"
 DATA_DIR="$BENCHMARK_DATA_DIR"
-# Adjust sample size for quick test, full test will cost several hours
-# SAMPLA_SIZE=100
+# Optional sample size. When set to 1000 for ad, the loader prefers:
+# ../data/onerec_data/benchmark_data/ad/ad_test_sample_1000.parquet
+SAMPLE_ARGS=()
+if [ -n "$SAMPLE_SIZE" ]; then
+    SAMPLE_ARGS=(--sample_size "$SAMPLE_SIZE")
+fi
 
 # Create output directory and log directory
 mkdir -p "$(dirname "${BASE_LOG_NAME}")"
@@ -33,6 +38,7 @@ mkdir -p "$BASE_OUTPUT_DIR"
     echo "========== Task Configuration =========="
     echo "DATA_DIR: $DATA_DIR"
     echo "Enable Thinking: $ENABLE_THINKING"
+    echo "Sample Size: ${SAMPLE_SIZE:-full/default}"
     echo "========================================"
 } >> "${BASE_LOG_NAME}.log"
 
@@ -43,6 +49,7 @@ if [ "$ENABLE_THINKING" = "true" ]; then
 fi
 
 echo "Thinking args: $THINKING_ARGS"
+echo "Sample args: ${SAMPLE_ARGS[*]:-<none>}"
 
 echo "Running all tasks"
 
@@ -102,25 +109,24 @@ run_eval_task ad \
     --worker_batch_size 1875 \
     --overwrite \
     --num_beams 32 --num_return_sequences 32 --num_return_thinking_sequences 1 \
-    # --sample_size $SAMPLA_SIZE \
+    "${SAMPLE_ARGS[@]}" \
     $THINKING_ARGS
 
-echo "Task 4/8: product"
+# echo "Task 4/8: product"
 # Task: product
-run_eval_task product \
-    --task_types product \
-    --gpu_memory_utilization 0.8 \
-    --model_path "$MODEL_PATH" \
-    --data_dir "$DATA_DIR" \
-    --output_dir "${BASE_OUTPUT_DIR}" \
-    --dtype bfloat16 \
-    --worker_batch_size 1875 \
-    --overwrite \
-    --num_beams 32 --num_return_sequences 32 --num_return_thinking_sequences 1 \
-    # --sample_size $SAMPLA_SIZE \
-    $THINKING_ARGS
+# run_eval_task product \
+#     --task_types product \
+#     --gpu_memory_utilization 0.8 \
+#     --model_path "$MODEL_PATH" \
+#     --data_dir "$DATA_DIR" \
+#     --output_dir "${BASE_OUTPUT_DIR}" \
+#     --dtype bfloat16 \
+#     --worker_batch_size 1875 \
+#     --overwrite \
+#     --num_beams 32 --num_return_sequences 32 --num_return_thinking_sequences 1 \
+#     $THINKING_ARGS
 
-echo "Task 5/8: label_cond"
+# echo "Task 5/8: label_cond"
 # Task: label_cond
 # run_eval_task label_cond \
 #     --task_types label_cond \
@@ -135,22 +141,21 @@ echo "Task 5/8: label_cond"
 #     --sample_size $SAMPLA_SIZE \
 #     $THINKING_ARGS
 
-echo "Task 6/8: video"  
+# echo "Task 6/8: video"  
 # Task: video
-run_eval_task video \
-    --task_types video \
-    --gpu_memory_utilization 0.8 \
-    --model_path "$MODEL_PATH" \
-    --data_dir "$DATA_DIR" \
-    --output_dir "${BASE_OUTPUT_DIR}" \
-    --dtype bfloat16 \
-    --worker_batch_size 1875 \
-    --overwrite \
-    --num_beams 32 --num_return_sequences 32 --num_return_thinking_sequences 1 \
-    # --sample_size $SAMPLA_SIZE \
-    $THINKING_ARGS
+# run_eval_task video \
+#     --task_types video \
+#     --gpu_memory_utilization 0.8 \
+#     --model_path "$MODEL_PATH" \
+#     --data_dir "$DATA_DIR" \
+#     --output_dir "${BASE_OUTPUT_DIR}" \
+#     --dtype bfloat16 \
+#     --worker_batch_size 1875 \
+#     --overwrite \
+#     --num_beams 32 --num_return_sequences 32 --num_return_thinking_sequences 1 \
+#     $THINKING_ARGS
 
-echo "Task 7/8: interactive"
+# echo "Task 7/8: interactive"
 # Task: interactive
 # run_eval_task interactive \
 #     --task_types interactive \
@@ -165,7 +170,7 @@ echo "Task 7/8: interactive"
 #     --sample_size $SAMPLA_SIZE \
 #     $THINKING_ARGS
 
-echo "Task 8/8: seq_pred"
+# echo "Task 8/8: seq_pred"
 # Task: label_pred
 # run_eval_task label_pred \
 #     --task_types label_pred \

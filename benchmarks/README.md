@@ -76,8 +76,8 @@ bash eval_script.sh <model_path> <result_name> <enable_thinking>
 ```bash
 # Without thinking mode, path: /home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/cc4d0b5b7294ecf75e40be1c77fa6b7d284bb84b
 bash eval_script.sh \
-    /home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/cc4d0b5b7294ecf75e40be1c77fa6b7d284bb84b \
-    model_nonthink \
+    /home/yhhuang/Projects/OpenOneRec/benchmarks/models/OneRec-1.7B-llc-FP8-WEIGHT-ONLY
+    OneRec-1.7B-llc-fp8-WEIGHT-ONLY \
     false
 
 # With thinking mode

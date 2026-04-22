@@ -563,6 +563,7 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
             "dtype": dtype,
             "tensor_parallel_size": tensor_parallel_size,
             "max_logprobs": max_logprobs,
+            # "quantization":"fp8",
         }
 
         if max_model_len is not None:
