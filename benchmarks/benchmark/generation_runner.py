@@ -116,6 +116,7 @@ class GenerationRunner:
         
         hardware_info = None
         mfu_stats = None
+        profile_stats = None
         
         try:
             # Check if generator has get_hardware_info method
@@ -148,6 +149,15 @@ class GenerationRunner:
                         console.print(f"[MFU DEBUG]   times: {first_stats.get('times', 'MISSING')}")
                 else:
                     console.print("[MFU WARNING] mfu_stats is None!")
+
+            profile_stats = getattr(generator, 'profile_stats', None)
+            if profile_stats:
+                console.print(
+                    f"[PROFILE] vLLM generate: {profile_stats.get('vllm_generate_time', 0.0):.2f}s, "
+                    f"decode: {profile_stats.get('decode_time', 0.0):.2f}s, "
+                    f"pack: {profile_stats.get('pack_time', 0.0):.2f}s",
+                    style=subhead_style_2,
+                )
                     
         except Exception as e:
             console.print(f"Warning: Failed to collect hardware info or MFU stats: {e}", style=warning_style)
@@ -169,6 +179,7 @@ class GenerationRunner:
             avg_time_per_sample=avg_time_per_sample,
             hardware_info=hardware_info,
             mfu_stats=mfu_stats,
+            profile_stats=profile_stats,
             num_params=getattr(generator, 'num_params', None),
         )
         
@@ -190,6 +201,7 @@ class GenerationRunner:
         avg_time_per_sample: float,
         hardware_info: Optional[Dict[str, Any]] = None,
         mfu_stats: Optional[Dict[str, Dict[str, List[int]]]] = None,
+        profile_stats: Optional[Dict[str, Any]] = None,
         num_params: Optional[float] = None,
     ):
         """
@@ -262,6 +274,9 @@ class GenerationRunner:
             data["num_params"] = num_params
         else:
             console.print("[MFU DEBUG] ❌ Skipping num_params (None or 0)")
+
+        if profile_stats:
+            data["profile_stats_aggregate"] = profile_stats
 
         # Save mfu_stats_aggregate for multi-stage MFU calculation
         # Compute aggregate statistics from per-sample mfu_stats

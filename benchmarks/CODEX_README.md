@@ -341,8 +341,106 @@ results/v1.0/fp8_qdq_ad_full_summary.csv
 6. `gate-up` 的下降 3.06% 并不是 `gate-only + up-only` 的简单相加；而 `mlp-all` 反而只下降 1.04%，说明加入 `down_proj` QDQ 后可能改变了扰动方向，对 beam ranking 有一定抵消效果。
 7. 当前 QDQ 实验没有真实性能收益；如果指标稳定，下一步才考虑 vLLM 原生 FP8/低精度部署路径。
 
+## Real FP8 inference results
+除了 QDQ simulation，也补充了真实 FP8 推理实验：
+
+```text
+vLLM online FP8         : LLM(..., quantization="fp8")
+llm-compressor FP8_DYNAMIC: 离线生成 vLLM-compatible FP8 checkpoint
+llm-compressor FP8 static activation: calibration samples 确定 activation scale
+```
+
+当前理解：
+
+```text
+vLLM online FP8: Linear weight 使用 FP8 per-tensor scale，activation 动态量化。
+llm-compressor FP8_DYNAMIC: Linear weight 静态 per-channel，activation 动态 per-token。
+llm-compressor FP8_ACT_TENSOR_STATIC: Linear weight 静态 per-channel，activation 静态 per-tensor。
+```
+
+AD full 结果（修正 vLLM 环境后的双卡 H100 / L20X）：
+
+| setting | result_dir | avg_accuracy_drop_pct | pass@32 | recall@32 | pid_pass@32 | pid_recall@32 | total_time |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline BF16 | `results/v1.0/results_OneRec-1.7B-baseline` | 0.00 | 0.21595549 | 0.07480481 | 0.20218954 | 0.06944162 | 28.26 min |
+| FP8_DYNAMIC, act dynamic per-token | `results/v1.0/results_OneRec-1.7B-llmcompressor-fp8-dynamic` | 2.80 | 0.20627236 | 0.07106940 | 0.19369874 | 0.06606428 | 27.96 min |
+| FP8_ACT_TENSOR_STATIC, act static per-tensor | `results/v1.0/results_OneRec-1.7B-llmcompressor-fp8-act-tensor-static` | 5.06 | 0.20424902 | 0.07010798 | 0.19080825 | 0.06486172 | 27.79 min |
+
+注：`avg_accuracy_drop_pct` 按 `pass@1 / recall@1 / pass@32 / recall@32 / pid_pass@32 / pid_recall@32` 相对 baseline 的平均下降计算。
+
+AD sample 1000 profiling（双卡，`PROFILE_TIMING=true`）：
+
+| item | baseline | FP8_DYNAMIC | time reduction | speedup |
+| --- | ---: | ---: | ---: | ---: |
+| `worker_wall_time_max` | 68.92s | 65.79s | 4.53% | 4.74% |
+| `batch_total_time` worker sum | 136.95s | 129.92s | 5.13% | 5.41% |
+| `vllm_generate_time` worker sum | 133.85s | 127.25s | 4.93% | 5.19% |
+| `tokenize_time` | 1.23s | 1.19s | 3.50% | 3.62% |
+| `decode_time` | 0.18s | 0.18s | 1.14% | 1.15% |
+| `pack_time` | 0.0101s | 0.0104s | -3.06% | -2.97% |
+
+Profiling 占比：
+
+| component | baseline | FP8_DYNAMIC |
+| --- | ---: | ---: |
+| tokenize | 0.91% | 0.92% |
+| vLLM beam search / generate | 98.94% | 98.93% |
+| decode | 0.14% | 0.14% |
+| pack | 0.01% | 0.01% |
+
+结论：当前时间开销几乎全部集中在 `vllm_generate_time`，也就是 vLLM 的 beam search / generate 黑盒中。FP8_DYNAMIC 在该黑盒上约有 5% speedup，但收益较小，full benchmark 中容易被调度和运行波动抵消。后续 latency 分析应继续拆 vLLM 内部的 prefill、3-step beam expansion、top-k/logprob 维护和 kernel path 开销。
+
+Additional implementation notes:
+
+1. `fp8_weight_only_channel` 是可由 llm-compressor / compressed-tensors 表达的自定义配置：
+
+```text
+weight: FP8 e4m3, per-channel, static
+activation: BF16 / FP16, not quantized
+```
+
+但当前 vLLM 环境无法稳定加载该 checkpoint。vLLM 会将它识别为 `compressed_tensors_w8a16_fp8`，并进入 FP8 Marlin weight-only 路径；H100 / L20X 上出现如下 warning 和 fatal error：
+
+```text
+Your GPU does not have native support for FP8 computation but FP8 quantization is being used.
+Weight-only FP8 compression will be used leveraging the Marlin kernel.
+
+torch.AcceleratorError: CUDA error: the provided PTX was compiled with an unsupported toolchain.
+```
+
+这个 warning 已有类似 GitHub issue 讨论：`https://github.com/vllm-project/vllm/issues/10142`。这里不应理解为 H100 不支持 FP8，而是 vLLM 对 weight-only FP8 config 走了 Marlin backend。`VLLM_USE_V1=0` 后仍失败，因此当前不把真实 vLLM weight-only FP8 作为可跑实验路径；FP8 weight-only 的精度消融仍以 QDQ 为主。
+
+2. 下一组真实 FP8 实验优先比较 activation quantization path：
+
+```text
+FP8_DYNAMIC:
+  weight FP8 per-channel static
+  activation FP8 dynamic per-token
+
+fp8_weight_channel_act_tensor_static:
+  weight FP8 per-channel static
+  activation FP8 static per-tensor, calibrated on AD prompts
+```
+
+校准数据已导出到：
+
+```text
+quantization_configs/calibration/ad_sample_1000.jsonl
+```
+
+这组实验用于比较在线 activation dynamic quantization 与离线 calibrated static activation quantization 的精度和时延差异。
+
+阶段性结论：
+
+```text
+两种真实 llm-compressor FP8 的耗时都约 28 min，和 BF16 baseline 基本持平，没有稳定 latency 收益。
+FP8_DYNAMIC 的精度优于静态 activation per-tensor：平均下降 2.80% vs 5.06%。
+离线 calibrated static per-tensor activation scale 并没有改善推荐指标，反而比 dynamic per-token 更伤 top-32 / PID recall。
+当前更像是 activation scale 粒度问题，而不是简单“离线校准一定更稳”；per-token dynamic scale 对 SID beam ranking 更友好。
+```
+
 ## Next questions
-当前 QDQ 实验已经说明 OneRec-1.7B 对 FP8 e4m3 weight-only 量化比较耐受，但这还只是 sanity baseline，不构成主要创新。下一阶段更应该围绕“SID prediction / top-k recommendation 的量化敏感性”展开，而不是简单套用 AWQ/GPTQ。
+当前 QDQ 实验已经说明 OneRec-1.7B 对 FP8 e4m3 weight-only 量化比较耐受，而真实 W8A8 FP8 会带来更明显的推荐指标下降。下一阶段更应该围绕“SID prediction / top-k recommendation 的量化敏感性”展开，而不是简单套用 AWQ/GPTQ。
 
 可以把后续研究问题收敛为：
 
@@ -417,3 +515,9 @@ gate/up/down activation 是否和 target 掉出 top-32 更相关
 ```
 
 若发现明显差异，下一步再考虑 activation fake quant、SmoothQuant-style scaling、SID-decode-aware scaling 或 mixed precision；若差异不明显，则 activation quantization 可能不应作为主要创新方向。
+
+
+# 当前问题
+1. 量化模型时延收益微弱（5%左右），需要分析各部分执行时间查问题，如果用上FP8乘法做前向计算应该不至于收益这么低
+2. 有尝试weight-only fp8量化（W8A16），但是这块vllm推理会报错，网上也有人反馈这个问题，怀疑是8位和16位数据计算有bug，暂时无法避免，跑W8A8的量化就没有这个问题
+3. 逐模块最简量化方案太简单了，如果是

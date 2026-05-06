@@ -65,6 +65,11 @@ class InfrastructureConfig:
 @dataclass
 class InferenceConfig:
     """Inference execution and optimization parameters"""
+    # Reproducibility
+    seed: int = field(
+        default=42,
+        metadata={"help": "Random seed for Python, NumPy, PyTorch, and vLLM"}
+    )
     # vLLM optimizations (chunked_prefill, prefix_caching)
     force_enable_optimizations: bool = field(
         default=False,
@@ -78,6 +83,10 @@ class InferenceConfig:
     worker_batch_size: int = field(
         default=4,
         metadata={"help": "Batch size for each worker to process prompts (reduce this if KV cache is insufficient)"}
+    )
+    profile_timing: bool = field(
+        default=False,
+        metadata={"help": "Collect benchmark timing breakdown for worker internal batches"}
     )
 
 

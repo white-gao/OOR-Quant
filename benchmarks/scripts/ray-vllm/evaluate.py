@@ -3,7 +3,7 @@ import torch
 
 from benchmark import Benchmark
 from benchmark.console import *
-from utils.generator import RayVllmGenerator
+from utils.generator import RayVllmGenerator, set_global_seed
 from utils.arguments import (
     ModelConfig,
     InfrastructureConfig,
@@ -25,6 +25,9 @@ def main():
     ])
     model_config, infra_config, inference_config, generation_config, prompt_config, benchmark_config = \
         parser.parse_args_into_dataclasses()
+
+    set_global_seed(inference_config.seed)
+    console.print(f"Random seed: {inference_config.seed}", style=subhead_style_2)
 
     # 1. Initialize Benchmark
     benchmark = Benchmark(
@@ -53,6 +56,8 @@ def main():
         force_enable_optimizations=inference_config.force_enable_optimizations,
         force_disable_optimizations=inference_config.force_disable_optimizations,
         worker_batch_size=inference_config.worker_batch_size,
+        profile_timing=inference_config.profile_timing,
+        seed=inference_config.seed,
         task_types=benchmark_config.task_types
     )
 
@@ -99,4 +104,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -2,6 +2,7 @@ import os
 import ray
 import math
 import json
+import random
 from typing import Dict, List, Any, Optional
 from vllm import LLM, SamplingParams
 from vllm.sampling_params import BeamSearchParams
@@ -9,6 +10,28 @@ from vllm.sampling_params import BeamSearchParams
 from benchmark.base_generator import Generator, RayMixin, VllmMixin, DISABLE_OPTIMIZATIONS_FOR_TASKS
 from benchmark.checkpoint_utils import export_pt_to_safetensor
 from benchmark.console import *
+
+
+def set_global_seed(seed: Optional[int]) -> None:
+    """Set common RNG seeds in the current process."""
+    if seed is None:
+        return
+
+    random.seed(seed)
+
+    try:
+        import numpy as np
+        np.random.seed(seed)
+    except Exception:
+        pass
+
+    try:
+        import torch
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    except Exception:
+        pass
 
 
 class VllmWorker:
@@ -49,6 +72,8 @@ class VllmWorker:
         """
         self.worker_id = worker_id
         self.gpu_ids = gpu_ids
+        self.seed = kwargs.get("seed")
+        set_global_seed(self.seed)
 
         opt_status = "optimized" if enable_optimizations else "standard"
         gpu_str = ",".join(map(str, gpu_ids))
@@ -128,12 +153,13 @@ class VllmWorker:
         except Exception as e:
             print(f"  [Worker {self.worker_id}] ⚠ Graceful shutdown failed: {e}")
             return False
-    
+
     def generate_batch(
         self,
         prompts: Dict[str, str],
         sampling_params: Dict[str, Any],
-        worker_batch_size: int = 8
+        worker_batch_size: int = 8,
+        profile_timing: bool = False,
     ) -> tuple:
         """
         Batch text generation (internal batch processing to avoid vLLM scheduler issues)
@@ -153,7 +179,36 @@ class VllmWorker:
         stage_start_time = time.time()
 
         if not prompts:
-            return ({}, {}, {})
+            return ({}, {}, {}, None)
+
+        def sync_cuda_for_timing() -> None:
+            if not profile_timing:
+                return
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+            except Exception:
+                pass
+
+        def now() -> float:
+            return time.perf_counter()
+
+        profile_stats = None
+        if profile_timing:
+            profile_stats = {
+                "worker_id": self.worker_id,
+                "num_internal_batches": 0,
+                "num_prompts": 0,
+                "total_prompt_tokens": 0,
+                "total_output_tokens": 0,
+                "tokenize_time": 0.0,
+                "vllm_generate_time": 0.0,
+                "decode_time": 0.0,
+                "pack_time": 0.0,
+                "batch_total_time": 0.0,
+                "batches": [],
+            }
 
         # Determine whether to use BeamSearchParams or SamplingParams based on parameters
         if sampling_params.get("use_beam_search", False):
@@ -191,34 +246,68 @@ class VllmWorker:
             
             batch_sample_ids = sample_ids[start_idx:end_idx]
             batch_prompt_texts = prompt_texts[start_idx:end_idx]
+            batch_profile = None
+            batch_start_time = now()
+            if profile_timing:
+                batch_profile = {
+                    "worker_id": self.worker_id,
+                    "batch_idx": batch_idx,
+                    "num_prompts": len(batch_sample_ids),
+                    "prompt_tokens": 0,
+                    "output_tokens": 0,
+                    "tokenize_time": 0.0,
+                    "vllm_generate_time": 0.0,
+                    "decode_time": 0.0,
+                    "pack_time": 0.0,
+                    "total_time": 0.0,
+                }
             
             try:
                 # If using beam search, need to record each prompt's length
                 batch_prompt_lengths = []
                 if isinstance(sp, BeamSearchParams):
+                    t0 = now()
                     for text in batch_prompt_texts:
                         prompt_tokens = self.tokenizer.encode(text, add_special_tokens=True)
                         batch_prompt_lengths.append(len(prompt_tokens))
+                    if batch_profile is not None:
+                        batch_profile["tokenize_time"] += now() - t0
+                        batch_profile["prompt_tokens"] = sum(batch_prompt_lengths)
                 
                 # Choose different generation method based on parameter type
                 if isinstance(sp, BeamSearchParams):
                     # Beam search needs to use beam_search method
                     # beam_search input format is [{"prompt": "text"}]
                     batch_prompt_dicts = [{"prompt": text} for text in batch_prompt_texts]
+                    sync_cuda_for_timing()
+                    t0 = now()
                     batch_outputs = self.llm.beam_search(batch_prompt_dicts, sp)
+                    sync_cuda_for_timing()
+                    if batch_profile is not None:
+                        batch_profile["vllm_generate_time"] += now() - t0
                 else:
                     # Sampling mode uses generate method
+                    sync_cuda_for_timing()
+                    t0 = now()
                     batch_outputs = self.llm.generate(batch_prompt_texts, sp)
+                    sync_cuda_for_timing()
+                    if batch_profile is not None:
+                        batch_profile["vllm_generate_time"] += now() - t0
                 
                 # Organize results
                 for idx, (sample_id, output) in enumerate(zip(batch_sample_ids, batch_outputs)):
                     if isinstance(sp, BeamSearchParams):
                         # Beam search returns complete token IDs (including prompt), need to remove prompt part before decoding
                         prompt_length = batch_prompt_lengths[idx]
+                        t0 = now()
                         generated_texts = [
                             self.tokenizer.decode(seq.tokens[prompt_length:], skip_special_tokens=True)
                             for seq in output.sequences
                         ]
+                        if batch_profile is not None:
+                            batch_profile["decode_time"] += now() - t0
+
+                        t0 = now()
                         # Extract cum_logprob for each sequence
                         cum_logprobs = [seq.cum_logprob for seq in output.sequences]
                         all_results[sample_id] = generated_texts
@@ -227,12 +316,20 @@ class VllmWorker:
                         # Collect MFU stats for beam search
                         input_tokens = prompt_length
                         output_tokens_list = [len(seq.tokens) - prompt_length for seq in output.sequences]
+                        output_tokens = sum(output_tokens_list)
                         all_mfu_stats[sample_id] = {
                             "input_tokens": [input_tokens],
-                            "output_tokens": [sum(output_tokens_list)]
+                            "output_tokens": [output_tokens]
                         }
+                        if batch_profile is not None:
+                            batch_profile["output_tokens"] += output_tokens
+                            batch_profile["pack_time"] += now() - t0
                     else:
+                        t0 = now()
                         generated_texts = [out.text for out in output.outputs]
+                        if batch_profile is not None:
+                            batch_profile["decode_time"] += now() - t0
+                        t0 = now()
                         all_results[sample_id] = generated_texts
 
                         # If return_logprobs is enabled, calculate cumulative logprobs
@@ -257,10 +354,15 @@ class VllmWorker:
                         prompt_text = batch_prompt_texts[idx]
                         input_tokens = len(self.tokenizer.encode(prompt_text, add_special_tokens=True))
                         output_tokens_list = [len(out.token_ids) for out in output.outputs]
+                        output_tokens = sum(output_tokens_list)
                         all_mfu_stats[sample_id] = {
                             "input_tokens": [input_tokens],
-                            "output_tokens": [sum(output_tokens_list)]
+                            "output_tokens": [output_tokens]
                         }
+                        if batch_profile is not None:
+                            batch_profile["prompt_tokens"] += input_tokens
+                            batch_profile["output_tokens"] += output_tokens
+                            batch_profile["pack_time"] += now() - t0
                 
             except Exception as e:
                 # When a single batch fails, return empty string and print detailed error
@@ -284,6 +386,19 @@ class VllmWorker:
                         all_logprobs[sample_id] = [0.0] * num_return
                     # Don't include failed samples in MFU stats (they would have times=[0.0] which breaks MFU calculation)
 
+            if batch_profile is not None:
+                batch_profile["total_time"] = now() - batch_start_time
+                profile_stats["num_internal_batches"] += 1
+                profile_stats["num_prompts"] += batch_profile["num_prompts"]
+                profile_stats["total_prompt_tokens"] += batch_profile["prompt_tokens"]
+                profile_stats["total_output_tokens"] += batch_profile["output_tokens"]
+                profile_stats["tokenize_time"] += batch_profile["tokenize_time"]
+                profile_stats["vllm_generate_time"] += batch_profile["vllm_generate_time"]
+                profile_stats["decode_time"] += batch_profile["decode_time"]
+                profile_stats["pack_time"] += batch_profile["pack_time"]
+                profile_stats["batch_total_time"] += batch_profile["total_time"]
+                profile_stats["batches"].append(batch_profile)
+
         # Calculate stage time
         stage_elapsed_time = time.time() - stage_start_time
 
@@ -291,7 +406,7 @@ class VllmWorker:
         for sample_id in all_mfu_stats:
             all_mfu_stats[sample_id]["times"] = [stage_elapsed_time]
 
-        return (all_results, all_logprobs, all_mfu_stats)
+        return (all_results, all_logprobs, all_mfu_stats, profile_stats)
     
     def extract_token_logprobs_batch(
         self,
@@ -445,6 +560,8 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
         force_enable_optimizations: bool = False,
         force_disable_optimizations: bool = False,
         worker_batch_size: int = 4,
+        profile_timing: bool = False,
+        seed: int = 42,
         ray_address: Optional[str] = "auto",
         allow_cross_node_tensor_parallel: bool = False,
         **kwargs
@@ -474,10 +591,14 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
             force_enable_optimizations: Force enable optimizations for all tasks
             force_disable_optimizations: Force disable optimizations for all tasks
             worker_batch_size: Batch size for each worker (reduce if KV cache is insufficient)
+            profile_timing: Collect timing breakdown for worker internal batches
+            seed: Random seed for vLLM and common RNGs
             ray_address: Ray cluster address ('auto', 'local', or specific address)
             allow_cross_node_tensor_parallel: Allow tensor parallel across nodes (not recommended)
             **kwargs: Other parameters
         """
+        set_global_seed(seed)
+
         super().__init__(
             num_return_sequences=num_return_sequences,
             max_new_tokens=max_new_tokens,
@@ -499,6 +620,8 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
         self.max_model_len = max_model_len
         self.tensor_parallel_size = tensor_parallel_size
         self.worker_batch_size = worker_batch_size
+        self.profile_timing = profile_timing
+        self.profile_stats = None
         self.task_types = task_types or []
         self.force_enable_optimizations = force_enable_optimizations
         self.force_disable_optimizations = force_disable_optimizations
@@ -506,6 +629,7 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
         self.allow_cross_node_tensor_parallel = allow_cross_node_tensor_parallel
         self.num_gpus = num_gpus
         self.gpu_ids = gpu_ids
+        self.seed = seed
 
         console.print(
             "\nLoading Model\n",
@@ -563,6 +687,7 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
             "dtype": dtype,
             "tensor_parallel_size": tensor_parallel_size,
             "max_logprobs": max_logprobs,
+            "seed": seed,
             # "quantization":"fp8",
         }
 
@@ -774,7 +899,12 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
         futures = []
         for i, (worker, task) in enumerate(zip(self.workers, worker_tasks)):
             if task:  # Only submit non-empty tasks
-                future = worker.generate_batch.remote(task, sampling_params, self.worker_batch_size)
+                future = worker.generate_batch.remote(
+                    task,
+                    sampling_params,
+                    self.worker_batch_size,
+                    self.profile_timing,
+                )
                 futures.append(future)
         
         # Collect results
@@ -784,11 +914,16 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
         results = {}
         logprobs = {}
         mfu_stats = {}
+        profile_stats = []
         for worker_result in worker_results:
-            texts_dict, logprobs_dict, mfu_stats_dict = worker_result
+            texts_dict, logprobs_dict, mfu_stats_dict, worker_profile_stats = worker_result
             results.update(texts_dict)
             logprobs.update(logprobs_dict)
             mfu_stats.update(mfu_stats_dict)
+            if worker_profile_stats:
+                profile_stats.append(worker_profile_stats)
+
+        self.profile_stats = self._aggregate_profile_stats(profile_stats)
 
         console.print(
             f"✓ Generation completed",
@@ -796,6 +931,56 @@ class RayVllmGenerator(RayMixin, VllmMixin, Generator):
         )
 
         return (results, logprobs, mfu_stats)
+
+    @staticmethod
+    def _aggregate_profile_stats(worker_stats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not worker_stats:
+            return None
+
+        aggregate = {
+            "num_workers": len(worker_stats),
+            "num_internal_batches": 0,
+            "num_prompts": 0,
+            "total_prompt_tokens": 0,
+            "total_output_tokens": 0,
+            "tokenize_time": 0.0,
+            "vllm_generate_time": 0.0,
+            "decode_time": 0.0,
+            "pack_time": 0.0,
+            "batch_total_time": 0.0,
+            "worker_wall_time_max": 0.0,
+            "workers": worker_stats,
+        }
+        for stats in worker_stats:
+            aggregate["num_internal_batches"] += stats.get("num_internal_batches", 0)
+            aggregate["num_prompts"] += stats.get("num_prompts", 0)
+            aggregate["total_prompt_tokens"] += stats.get("total_prompt_tokens", 0)
+            aggregate["total_output_tokens"] += stats.get("total_output_tokens", 0)
+            aggregate["tokenize_time"] += stats.get("tokenize_time", 0.0)
+            aggregate["vllm_generate_time"] += stats.get("vllm_generate_time", 0.0)
+            aggregate["decode_time"] += stats.get("decode_time", 0.0)
+            aggregate["pack_time"] += stats.get("pack_time", 0.0)
+            aggregate["batch_total_time"] += stats.get("batch_total_time", 0.0)
+            aggregate["worker_wall_time_max"] = max(
+                aggregate["worker_wall_time_max"],
+                stats.get("batch_total_time", 0.0),
+            )
+
+        measured_sum = (
+            aggregate["tokenize_time"]
+            + aggregate["vllm_generate_time"]
+            + aggregate["decode_time"]
+            + aggregate["pack_time"]
+        )
+        aggregate["measured_component_time"] = measured_sum
+        if measured_sum > 0:
+            aggregate["component_time_pct"] = {
+                "tokenize": aggregate["tokenize_time"] / measured_sum * 100,
+                "vllm_generate": aggregate["vllm_generate_time"] / measured_sum * 100,
+                "decode": aggregate["decode_time"] / measured_sum * 100,
+                "pack": aggregate["pack_time"] / measured_sum * 100,
+            }
+        return aggregate
 
     
     def extract_token_logprobs(

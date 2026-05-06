@@ -175,6 +175,10 @@ class Generator(ABC):
         gpu_info["gpu_count"] = total_gpus
         gpu_info["tensor_parallel_size"] = tensor_parallel_size
 
+        seed = getattr(self, "seed", None)
+        if seed is not None:
+            gpu_info["seed"] = seed
+
         # Add worker info for Ray-based generators
         if hasattr(self, 'workers'):
             gpu_info["num_workers"] = len(self.workers) if self.workers else 0
@@ -672,7 +676,7 @@ class RayMixin:
                     "  [yellow]No existing cluster found, initializing local mode...[/yellow]",
                     style=warning_style,
                 )
-                ray.init(ignore_reinit_error=True)
+                ray.init(ignore_reinit_error=True, num_cpus=32, num_gpus=2)
                 console.print(
                     "  ✓ Ray initialized in local mode",
                     style=success_style,

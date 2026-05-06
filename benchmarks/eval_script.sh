@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=0,1
 export BENCHMARK_BASE_DIR="."
 export BENCHMARK_DATA_DIR="../data/onerec_data/benchmark_data"
 export DATA_VERSION="v1.0"
@@ -14,13 +14,15 @@ BASE_OUTPUT_DIR="${BENCHMARK_BASE_DIR}/results/${VERSION}/results_${2}"
 BASE_LOG_NAME="${BENCHMARK_BASE_DIR}/auto_eval_logs/${VERSION}/$2"
 ENABLE_THINKING="${3:-false}"
 SAMPLE_SIZE="${SAMPLE_SIZE:-${4:-}}"
+SEED="${SEED:-42}"
+PROFILE_TIMING="${PROFILE_TIMING:-false}"
 
 # Read configuration from environment variables (set by eval_script.py)
 # Fallback to hardcoded paths if not set
 BENCHMARK_BASE_DIR="${BENCHMARK_BASE_DIR:-/home/user/benchmark}"
 DATA_VERSION="${DATA_VERSION:-v1.0}"
 
-BENCHMARK_DATA_DIR="${BENCHMARK_DATA_DIR:-${BENCHMARK_BASE_DIR}/data_${DATA_VERSION}}"
+BENCHMARK_DATA_DIR="${BENCHMARK_DATA_DIR:-${BENCHMARK_BASE_DIR}/data_${DOATA_VERSION}}"
 DATA_DIR="$BENCHMARK_DATA_DIR"
 # Optional sample size. When set to 1000 for ad, the loader prefers:
 # ../data/onerec_data/benchmark_data/ad/ad_test_sample_1000.parquet
@@ -39,6 +41,8 @@ mkdir -p "$BASE_OUTPUT_DIR"
     echo "DATA_DIR: $DATA_DIR"
     echo "Enable Thinking: $ENABLE_THINKING"
     echo "Sample Size: ${SAMPLE_SIZE:-full/default}"
+    echo "Seed: $SEED"
+    echo "Profile Timing: $PROFILE_TIMING"
     echo "========================================"
 } >> "${BASE_LOG_NAME}.log"
 
@@ -50,6 +54,8 @@ fi
 
 echo "Thinking args: $THINKING_ARGS"
 echo "Sample args: ${SAMPLE_ARGS[*]:-<none>}"
+echo "Seed: $SEED"
+echo "Profile timing: $PROFILE_TIMING"
 
 echo "Running all tasks"
 
@@ -107,6 +113,8 @@ run_eval_task ad \
     --output_dir "${BASE_OUTPUT_DIR}" \
     --dtype bfloat16 \
     --worker_batch_size 1875 \
+    --seed "$SEED" \
+    $( [ "$PROFILE_TIMING" = "true" ] && echo "--profile_timing" ) \
     --overwrite \
     --num_beams 32 --num_return_sequences 32 --num_return_thinking_sequences 1 \
     "${SAMPLE_ARGS[@]}" \
