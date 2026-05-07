@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="test", choices=["test"])
     parser.add_argument("--sample_size", default=None, help='Integer sample size, "full", or omitted for task default.')
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
-    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    parser.add_argument("--device", default="cuda")
     parser.add_argument("--device_map", default=None, help='Optional HF device_map, e.g. "auto".')
     parser.add_argument("--quant_scheme", default="fp8_weight_channel", choices=["none", "fp8_weight_channel"])
     parser.add_argument("--act_quant", default="none", choices=["none", "per_token"])

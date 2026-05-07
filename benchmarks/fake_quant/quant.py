@@ -7,7 +7,6 @@ import torch
 
 FP8_MAX = 448.0
 
-
 def require_fp8() -> torch.dtype:
     if not hasattr(torch, "float8_e4m3fn"):
         raise RuntimeError(
