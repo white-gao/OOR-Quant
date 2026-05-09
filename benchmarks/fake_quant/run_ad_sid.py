@@ -45,6 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quant_scheme", default="fp8_weight_channel", choices=["none", "fp8_weight_channel"])
     parser.add_argument("--act_quant", default="none", choices=["none", "per_token"])
     parser.add_argument(
+        "--act_quant_mode",
+        default="per_linear",
+        choices=["per_linear", "shared_input"],
+        help="per_linear quantizes each Linear input independently; shared_input reuses qkv/gate-up activation QDQ.",
+    )
+    parser.add_argument(
         "--target_regex",
         default=None,
         help="Optional regex over module names. Default quantizes all Linear modules except skipped names.",
@@ -179,6 +185,7 @@ def save_results(
         "fake_quant_config": {
             "quant_scheme": args.quant_scheme,
             "act_quant": args.act_quant,
+            "act_quant_mode": args.act_quant_mode,
             "target_regex": args.target_regex,
             "quantize_lm_head": args.quantize_lm_head,
             "dtype": args.dtype,
@@ -234,12 +241,16 @@ def main() -> None:
         summary = apply_fp8_fake_quant(
             model,
             act_quant=args.act_quant,
+            act_quant_mode=args.act_quant_mode,
             skip_module_names=skip_names,
             target_regex=args.target_regex,
         )
         print(
             f"Applied FP8 fake quant: replaced_linears={summary.replaced_linears}, "
-            f"skipped_linears={summary.skipped_linears}, act_quant={args.act_quant}"
+            f"skipped_linears={summary.skipped_linears}, act_quant={args.act_quant}, "
+            f"act_quant_mode={args.act_quant_mode}, "
+            f"shared_attention_modules={summary.shared_attention_modules}, "
+            f"shared_mlp_modules={summary.shared_mlp_modules}"
         )
     elif args.act_quant != "none":
         raise ValueError("--act_quant requires --quant_scheme fp8_weight_channel in this runner.")

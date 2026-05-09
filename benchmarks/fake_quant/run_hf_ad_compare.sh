@@ -10,17 +10,17 @@ set -euo pipefail
 #   CUDA_VISIBLE_DEVICES=0
 #   RUN_BASELINE=true RUN_QUANT=true bash fake_quant/run_hf_ad_compare.sh
 
-MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B}"
-DATA_DIR="${DATA_DIR:-/home/yhhuang/Projects/OOR-Quant/data/onerec_data/benchmark-data/ad/}"
+MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B}"
+DATA_DIR="${DATA_DIR:-../data/onerec_data/benchmark_data}"
 VERSION="${VERSION:-v1.0}"
-SAMPLE_SIZE="${SAMPLE_SIZE:-100}"
+SAMPLE_SIZE="${SAMPLE_SIZE:-full}"
 NUM_BEAMS="${NUM_BEAMS:-32}"
 NUM_RETURN_SEQUENCES="${NUM_RETURN_SEQUENCES:-32}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-3}"
 DTYPE="${DTYPE:-bfloat16}"
-DEVICE="${DEVICE:-cuda:4}"
+DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
-RUN_BASELINE="${RUN_BASELINE:-true}"
+RUN_BASELINE="${RUN_BASELINE:-flase}"
 RUN_QUANT="${RUN_QUANT:-true}"
 EVALUATE="${EVALUATE:-true}"
 OVERWRITE="${OVERWRITE:-true}"
@@ -30,7 +30,8 @@ BASELINE_OUTPUT_DIR="${BASELINE_OUTPUT_DIR:-${BASE_OUTPUT_ROOT}/results_OneRec-1
 QUANT_OUTPUT_DIR="${QUANT_OUTPUT_DIR:-${BASE_OUTPUT_ROOT}/results_OneRec-1.7B-hf-fake-fp8-weight-channel-ad-sample-${SAMPLE_SIZE}}"
 BASELINE_MODEL_NAME="${BASELINE_MODEL_NAME:-OneRec-1.7B-hf-baseline}"
 QUANT_MODEL_NAME="${QUANT_MODEL_NAME:-OneRec-1.7B-hf-fake-fp8-weight-channel}"
-ACT_QUANT="${ACT_QUANT:-none}"
+ACT_QUANT="${ACT_QUANT:-per_token}"
+ACT_QUANT_MODE="${ACT_QUANT_MODE:-per_linear}"
 TARGET_REGEX="${TARGET_REGEX:-}"
 
 COMMON_ARGS=(
@@ -59,6 +60,8 @@ echo "SAMPLE_SIZE=${SAMPLE_SIZE}"
 echo "NUM_BEAMS=${NUM_BEAMS}"
 echo "NUM_RETURN_SEQUENCES=${NUM_RETURN_SEQUENCES}"
 echo "SEED=${SEED}"
+echo "ACT_QUANT=${ACT_QUANT}"
+echo "ACT_QUANT_MODE=${ACT_QUANT_MODE}"
 
 if [[ "$RUN_BASELINE" == "true" ]]; then
   echo "Running HF baseline..."
@@ -75,6 +78,7 @@ if [[ "$RUN_QUANT" == "true" ]]; then
     "${COMMON_ARGS[@]}"
     --quant_scheme fp8_weight_channel
     --act_quant "$ACT_QUANT"
+    --act_quant_mode "$ACT_QUANT_MODE"
     --output_dir "$QUANT_OUTPUT_DIR"
     --model_name "$QUANT_MODEL_NAME"
   )

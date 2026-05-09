@@ -54,4 +54,4 @@ def fp8_activation_per_token(
 
 
 ActQuant = Literal["none", "per_token"]
-
+ActQuantMode = Literal["per_linear", "shared_input"]

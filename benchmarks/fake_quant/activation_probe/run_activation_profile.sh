@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Profile OneRec-1.7B AD activation distributions with HF inference.
 # Run from benchmark repo root:
-#   bash fake_quant/run_activation_profile.sh
+#   bash fake_quant/activation_probe/run_activation_profile.sh
 
 MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B}"
 DATA_DIR="${DATA_DIR:-/home/yhhuang/Projects/OOR-Quant/data/onerec_data/benchmark-data/ad/}"
@@ -50,7 +50,7 @@ if [[ "$SAVE_HISTOGRAMS" == "true" ]]; then
   )
 fi
 
-python fake_quant/profile_ad_activations.py \
+python fake_quant/activation_probe/profile_ad_activations.py \
   --model_path "$MODEL_PATH" \
   --data_dir "$DATA_DIR" \
   --output_dir "$OUTPUT_DIR" \
