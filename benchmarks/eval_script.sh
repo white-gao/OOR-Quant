@@ -3,7 +3,7 @@ set -u
 
 export CUDA_VISIBLE_DEVICES=0,1
 export BENCHMARK_BASE_DIR="."
-export BENCHMARK_DATA_DIR="../data/onerec_data/benchmark_data"
+export BENCHMARK_DATA_DIR="../data/onerec_data/benchmark-data"
 export DATA_VERSION="v1.0"
 export VLLM_ATTENTION_BACKEND=TRITON_ATTN
 
@@ -25,7 +25,7 @@ DATA_VERSION="${DATA_VERSION:-v1.0}"
 BENCHMARK_DATA_DIR="${BENCHMARK_DATA_DIR:-${BENCHMARK_BASE_DIR}/data_${DOATA_VERSION}}"
 DATA_DIR="$BENCHMARK_DATA_DIR"
 # Optional sample size. When set to 1000 for ad, the loader prefers:
-# ../data/onerec_data/benchmark_data/ad/ad_test_sample_1000.parquet
+# ../data/onerec_data/benchmark-data/ad/ad_test_sample_1000.parquet
 SAMPLE_ARGS=()
 if [ -n "$SAMPLE_SIZE" ]; then
     SAMPLE_ARGS=(--sample_size "$SAMPLE_SIZE")

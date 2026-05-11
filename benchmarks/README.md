@@ -59,7 +59,7 @@ print(response)
 
 ```bash
 export BENCHMARK_BASE_DIR="."
-export BENCHMARK_DATA_DIR="../raw_data/onerec_data/benchmark_data"
+export BENCHMARK_DATA_DIR="../data/onerec_data/benchmark-data"
 export DATA_VERSION="v1.0"
 
 bash eval_script.sh <model_path> <result_name> <enable_thinking>

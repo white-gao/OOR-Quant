@@ -13,7 +13,7 @@ set -euo pipefail
 #   SKIP_DONE=false bash fake_quant/run_hf_ad_full_quant.sh
 
 MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B}"
-DATA_DIR="${DATA_DIR:-../data/onerec_data/benchmark_data}"
+DATA_DIR="${DATA_DIR:-../data/onerec_data/benchmark-data}"
 VERSION="${VERSION:-v1.0}"
 SAMPLE_SIZE="${SAMPLE_SIZE:-1000}"
 NUM_BEAMS="${NUM_BEAMS:-32}"

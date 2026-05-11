@@ -22,13 +22,13 @@ from benchmark import Benchmark
 from benchmark.tasks.v1_0.registry import get_loader, get_task_config
 
 try:
-    from .apply import apply_fp8_fake_quant
+    from .apply import apply_fp8_fake_quant, apply_smoothquant_fp8_fake_quant
 except ImportError:
-    from fake_quant.apply import apply_fp8_fake_quant
+    from fake_quant.apply import apply_fp8_fake_quant, apply_smoothquant_fp8_fake_quant
 
 
 DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B"
-DEFAULT_DATA_DIR = "../data/onerec_data/benchmark_data"
+DEFAULT_DATA_DIR = "../data/onerec_data/benchmark-data"
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,13 +36,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model_path", default=DEFAULT_MODEL_PATH, help="HF base model path.")
     parser.add_argument("--model_name", default=None, help="Name used in result directory and JSON.")
     parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
+    parser.add_argument(
+        "--eval_data_dir",
+        default=None,
+        help="Optional data_dir passed to Benchmark.evaluate_dev. Defaults to --data_dir.",
+    )
     parser.add_argument("--output_dir", default="results/v1.0/results_OneRec-1.7B-hf-fake-fp8")
     parser.add_argument("--split", default="test", choices=["test"])
     parser.add_argument("--sample_size", default=None, help='Integer sample size, "full", or omitted for task default.')
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--device_map", default=None, help='Optional HF device_map, e.g. "auto".')
-    parser.add_argument("--quant_scheme", default="fp8_weight_channel", choices=["none", "fp8_weight_channel"])
+    parser.add_argument(
+        "--quant_scheme",
+        default="fp8_weight_channel",
+        choices=["none", "fp8_weight_channel", "fp8_smoothquant"],
+    )
     parser.add_argument("--act_quant", default="none", choices=["none", "per_token"])
     parser.add_argument(
         "--act_quant_mode",
@@ -55,6 +64,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional regex over module names. Default quantizes all Linear modules except skipped names.",
     )
+    parser.add_argument(
+        "--skip_regex",
+        default=None,
+        help="Optional regex over module names to skip from fake quantization.",
+    )
+    parser.add_argument(
+        "--smooth_scales_path",
+        default=None,
+        help="Path to SmoothQuant calibration absmax file produced by collect_smooth_scales.py.",
+    )
+    parser.add_argument("--smooth_alpha", type=float, default=0.5, help="SmoothQuant alpha in [0, 1].")
     parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--num_beams", type=int, default=32)
     parser.add_argument("--num_return_sequences", type=int, default=32)
@@ -187,6 +207,9 @@ def save_results(
             "act_quant": args.act_quant,
             "act_quant_mode": args.act_quant_mode,
             "target_regex": args.target_regex,
+            "skip_regex": args.skip_regex,
+            "smooth_scales_path": args.smooth_scales_path,
+            "smooth_alpha": args.smooth_alpha,
             "quantize_lm_head": args.quantize_lm_head,
             "dtype": args.dtype,
             "num_beams": args.num_beams,
@@ -244,6 +267,7 @@ def main() -> None:
             act_quant_mode=args.act_quant_mode,
             skip_module_names=skip_names,
             target_regex=args.target_regex,
+            skip_regex=args.skip_regex,
         )
         print(
             f"Applied FP8 fake quant: replaced_linears={summary.replaced_linears}, "
@@ -252,8 +276,30 @@ def main() -> None:
             f"shared_attention_modules={summary.shared_attention_modules}, "
             f"shared_mlp_modules={summary.shared_mlp_modules}"
         )
+    elif args.quant_scheme == "fp8_smoothquant":
+        if not args.smooth_scales_path:
+            raise ValueError("--quant_scheme fp8_smoothquant requires --smooth_scales_path.")
+        skip_names = () if args.quantize_lm_head else ("lm_head",)
+        summary = apply_smoothquant_fp8_fake_quant(
+            model,
+            activation_absmax_path=args.smooth_scales_path,
+            alpha=args.smooth_alpha,
+            act_quant=args.act_quant,
+            act_quant_mode=args.act_quant_mode,
+            skip_module_names=skip_names,
+            target_regex=args.target_regex,
+            skip_regex=args.skip_regex,
+        )
+        print(
+            f"Applied SmoothQuant FP8 fake quant: replaced_linears={summary.replaced_linears}, "
+            f"skipped_linears={summary.skipped_linears}, act_quant={args.act_quant}, "
+            f"act_quant_mode={args.act_quant_mode}, smooth_alpha={args.smooth_alpha}, "
+            f"smooth_scales_path={args.smooth_scales_path}, "
+            f"shared_attention_modules={summary.shared_attention_modules}, "
+            f"shared_mlp_modules={summary.shared_mlp_modules}"
+        )
     elif args.act_quant != "none":
-        raise ValueError("--act_quant requires --quant_scheme fp8_weight_channel in this runner.")
+        raise ValueError("--act_quant requires a fake-quant --quant_scheme in this runner.")
 
     input_device = resolve_input_device(model, args.device)
     task_config = get_task_config("ad")
@@ -289,7 +335,7 @@ def main() -> None:
     print(f"Total time: {total_time:.2f}s, avg/sample: {total_time / len(test_data):.4f}s")
 
     if args.evaluate:
-        maybe_evaluate(args.output_dir, args.data_dir, args.overwrite)
+        maybe_evaluate(args.output_dir, args.eval_data_dir or args.data_dir, args.overwrite)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ set -euo pipefail
 #   bash fake_quant/activation_probe/run_token_channel_plots.sh
 
 MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B}"
-DATA_DIR="${DATA_DIR:-../data/onerec_data/benchmark_data}"
+DATA_DIR="${DATA_DIR:-../data/onerec_data/benchmark-data}"
 VERSION="${VERSION:-v1.0}"
 SAMPLE_INDEX="${SAMPLE_INDEX:-0}"
 LAYERS="${LAYERS:-0,4,8,12,16,20,24,27}"
@@ -24,8 +24,8 @@ if [[ ! -e "$MODEL_PATH" && -e "/zssd/home/yhhuang/.cache/huggingface/hub/models
   MODEL_PATH="/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B"
 fi
 
-if [[ ! -f "${DATA_DIR}/ad/ad_test.parquet" && -f "/zssd/home/yhhuang/Projects/OpenOneRec/data/onerec_data/benchmark_data/ad/ad_test.parquet" ]]; then
-  DATA_DIR="/zssd/home/yhhuang/Projects/OpenOneRec/data/onerec_data/benchmark_data"
+if [[ ! -f "${DATA_DIR}/ad/ad_test.parquet" && -f "/zssd/home/yhhuang/Projects/OOR-Quant/data/onerec_data/benchmark-data/ad/ad_test.parquet" ]]; then
+  DATA_DIR="/zssd/home/yhhuang/Projects/OOR-Quant/data/onerec_data/benchmark-data"
 fi
 
 echo "MODEL_PATH=${MODEL_PATH}"
