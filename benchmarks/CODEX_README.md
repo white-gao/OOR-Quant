@@ -145,7 +145,7 @@ summary csv: results/v1.0/fp8_qdq_ad_full_summary.csv
 用于 beam/rank 快速分析的 AD 1000 条子集：
 
 ```text
-../data/onerec_data/benchmark_data/ad/ad_test_sample_1000.parquet
+data/onerec_data/benchmark-data/ad/ad_test_sample_1000.parquet
 ```
 
 ## Experiment setup
@@ -216,7 +216,7 @@ RUN_EVAL=1 SAMPLE_SIZE=1000 EXPERIMENTS="gate_only up_only" bash scripts/run_fp8
 loader 会优先读取：
 
 ```text
-../data/onerec_data/benchmark_data/ad/ad_test_sample_1000.parquet
+data/onerec_data/benchmark-data/ad/ad_test_sample_1000.parquet
 ```
 
 默认结果后缀会从 `ad_full` 自动变成：

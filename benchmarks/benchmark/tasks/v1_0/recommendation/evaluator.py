@@ -2,7 +2,7 @@
 Recommendation Task Evaluator
 
 Universal evaluator for all recommendation tasks.
-Computes Pass@k and Position1_Pass@k metrics.
+Computes Pass@k and Recall@k metrics.
 """
 
 import json
@@ -26,7 +26,7 @@ class RecommendationEvaluator(BaseEval):
 
     Metrics:
     - Pass@k: Check if any of top-k predictions match any ground truth SID
-    - Position1_Pass@k: Check if any of top-k predictions match the first ground truth SID
+    - Recall@k: Fraction of ground truth IDs covered by top-k predictions
     """
 
     @property
@@ -38,12 +38,12 @@ class RecommendationEvaluator(BaseEval):
         metrics = []
 
         if evaluation_mode in ("sid", "both"):
-            for k in k_values:
-                metrics.extend([f"pass@{k}", f"position1_pass@{k}", f"recall@{k}"])
+            metrics.extend([f"pass@{k}" for k in k_values])
+            metrics.extend([f"recall@{k}" for k in k_values])
 
         if evaluation_mode in ("pid", "both"):
-            for k in k_values:
-                metrics.extend([f"pid_pass@{k}", f"pid_position1_pass@{k}", f"pid_recall@{k}"])
+            metrics.extend([f"pid_pass@{k}" for k in k_values])
+            metrics.extend([f"pid_recall@{k}" for k in k_values])
 
         return metrics
 
@@ -121,7 +121,7 @@ class RecommendationEvaluator(BaseEval):
             sid_to_pid_strategy: Strategy for SID->PID conversion ("most_popular" or "random")
 
         Returns:
-            Tuple of (pass_counts, position1_pass_counts, recall_sums, per_sample_metrics, debug_info_lists)
+            Tuple of (pass_counts, recall_sums, per_sample_metrics, debug_info_lists)
         """
         # Select utils module based on mode
         if evaluation_mode == "sid":
@@ -154,7 +154,6 @@ class RecommendationEvaluator(BaseEval):
             metrics = {}
             for k in k_values:
                 metrics[f"pass@{k}"] = False
-                metrics[f"position1_pass@{k}"] = False
                 metrics[f"recall@{k}"] = 0.0
             return metrics
 
@@ -219,7 +218,8 @@ class RecommendationEvaluator(BaseEval):
                 if pass_result:
                     pass_at_k_counts[k] += 1
 
-                # Compute Position1_Pass@k
+                # Keep position1 metrics available for debug, but do not include
+                # them in eval_results.json or per-sample generation outputs.
                 position1_pass_result = utils.compute_position1_pass_at_k(
                     predicted_ids, first_ground_truth_id, k
                 )
@@ -235,7 +235,6 @@ class RecommendationEvaluator(BaseEval):
             # Store per-sample metrics
             sample_metrics = {
                 **sample_pass_results,
-                **sample_position1_pass_results,
                 **sample_recall_results
             }
 
@@ -281,12 +280,11 @@ class RecommendationEvaluator(BaseEval):
                 else:
                     debug_info["failed_samples"].append(debug_item)
 
-        return pass_at_k_counts, position1_pass_at_k_counts, recall_at_k_sums, per_sample_metrics, debug_info
+        return pass_at_k_counts, recall_at_k_sums, per_sample_metrics, debug_info
 
     def _calculate_metrics_from_counts(
         self,
         pass_counts: Dict[int, int],
-        position1_pass_counts: Dict[int, int],
         recall_sums: Dict[int, float],
         total_samples: int,
         k_values: List[int],
@@ -297,7 +295,6 @@ class RecommendationEvaluator(BaseEval):
 
         Args:
             pass_counts: Pass@k counts for each k
-            position1_pass_counts: Position1_Pass@k counts for each k
             recall_sums: Recall@k sums for each k
             total_samples: Total number of samples
             k_values: List of k values
@@ -309,7 +306,7 @@ class RecommendationEvaluator(BaseEval):
         metrics = {}
         for k in k_values:
             metrics[f"{prefix}pass@{k}"] = pass_counts[k] / total_samples if total_samples > 0 else 0.0
-            metrics[f"{prefix}position1_pass@{k}"] = position1_pass_counts[k] / total_samples if total_samples > 0 else 0.0
+        for k in k_values:
             metrics[f"{prefix}recall@{k}"] = recall_sums[k] / total_samples if total_samples > 0 else 0.0
         return metrics
 
@@ -359,8 +356,9 @@ class RecommendationEvaluator(BaseEval):
         if evaluation_mode == "both":
             console.print("[cyan]Evaluating using both SID and PID modes...[/cyan]")
 
-        # Initialize metrics
-        metrics = {"total_samples": total_samples}
+        # Initialize metrics. Accuracy metrics are inserted first so eval_results.json
+        # stays easy to scan: pass, recall, pid_pass, pid_recall.
+        metrics = {}
         per_sample_metrics = {}
         all_debug_info = {}
 
@@ -369,7 +367,7 @@ class RecommendationEvaluator(BaseEval):
             console.print(f"[cyan]{log_message}[/cyan]")
 
             # Run evaluation
-            pass_counts, position1_pass_counts, recall_sums, mode_per_sample_metrics, debug_info = self._evaluate_single_mode(
+            pass_counts, recall_sums, mode_per_sample_metrics, debug_info = self._evaluate_single_mode(
                 k_values=k_values,
                 evaluation_mode=mode_name,
                 select_k_strategy=select_k_strategy,
@@ -379,7 +377,7 @@ class RecommendationEvaluator(BaseEval):
 
             # Calculate and add metrics
             mode_metrics = self._calculate_metrics_from_counts(
-                pass_counts, position1_pass_counts, recall_sums,
+                pass_counts, recall_sums,
                 total_samples, k_values, metric_prefix
             )
             metrics.update(mode_metrics)
@@ -418,7 +416,8 @@ class RecommendationEvaluator(BaseEval):
 
                 self._save_debug_info(debug_info, filtered_metrics, debug_filename)
 
-        # Record configuration
+        # Record metadata/configuration after accuracy metrics.
+        metrics["total_samples"] = total_samples
         metrics["select_k_strategy"] = select_k_strategy
         metrics["evaluation_mode"] = evaluation_mode
         if evaluation_mode in ("pid", "both"):
@@ -477,4 +476,3 @@ class RecommendationEvaluator(BaseEval):
                     console.print(f"    Ground truth PIDs: {item['ground_truth_pids']}")
                 console.print(f"    Top 5 generations: {item['top_10_generations'][:5]}")
                 console.print()
-

@@ -31,8 +31,8 @@ RECOMMENDATION_GENERATION_CONFIG = {
 
 # Common evaluation config for recommendation tasks
 RECOMMENDATION_EVALUATION_CONFIG = {
-    "metrics": ["pass@k", "position1_pass@k", "recall@k"],
-    "k_values": [1, 32],
+    "metrics": ["pass@k", "recall@k"],
+    "k_values": [1, 4, 8, 16, 32],
     "select_k": "first_k",  # Strategy for selecting k predictions: 'first_k' or 'random_k'
 
     # PID-based evaluation settings
@@ -133,4 +133,3 @@ RECOMMENDATION_TASK_CONFIGS = {
     "ad": AD_CONFIG,
     "interactive": INTERACTIVE_CONFIG,
 }
-

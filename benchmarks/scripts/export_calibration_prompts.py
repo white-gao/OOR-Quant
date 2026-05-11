@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--data_dir",
-        default="../data/onerec_data/benchmark-data",
+        default="data/onerec_data/benchmark-data",
         help="Benchmark data directory.",
     )
     parser.add_argument(

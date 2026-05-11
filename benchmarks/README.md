@@ -1,122 +1,38 @@
-# Benchmark
+# Benchmarks
 
+This directory is trimmed for OneRec quantization and AD-domain evaluation. The original API-wrapper, Ray/vLLM multi-node runner, and standalone HF profiling entrypoints were removed from this workspace.
 
-## Quick Start
+## Main Entrypoints
 
-### Step 1: Install Dependencies
-
-```bash
-cd benchmarks
-
-conda create -n benchmark python=3.10 
-conda activate benchmark
-pip install uv
-uv pip install torch==2.5.1 transformers==4.52.0 vllm==0.7.3
-pip install -r requirements.txt
-pip install -e . --no-deps --no-build-isolation
-```
-
-### Step 2: Start Ray Cluster (Optional)
+Run HuggingFace fake-quant AD evaluation from the repository root:
 
 ```bash
-# Initialize multi-node multi-GPU environment
-# Skip this step if using single-node multi-GPU setup
-bash scripts/init_ray_cluster.sh
+bash fake_quant/run_hf_ad_full_quant.sh
 ```
 
-
-### Step 3: Configure LLM API
-
-Edit `api/config/llm_config.json` to fill in your Gemini configuration:
-
-```json
-{
-  "gemini": {
-    "project": "<your-project>",
-    "location": "<your-location>",
-    "credentials_path": "<path-to-credentials>",
-    ...
-  }
-}
-```
-
-**Note**: Only `project`, `location`, and `credentials_path` need to be configured. 
-
-Test the configuration:
-
-```python
-from api import get_client_from_config
-
-# Create client
-client = get_client_from_config("gemini")
-
-# Generate text
-response = client.generate("Tell me a joke")
-print(response)
-```
-
-### Step 4: Run Evaluation
+Run SmoothQuant-style FP8 fake quant:
 
 ```bash
-export BENCHMARK_BASE_DIR="."
-export BENCHMARK_DATA_DIR="../data/onerec_data/benchmark-data"
-export DATA_VERSION="v1.0"
-
-bash eval_script.sh <model_path> <result_name> <enable_thinking>
+bash fake_quant/smoothquant/run_smoothquant_ad.sh
 ```
 
-**Parameters**:
-| Parameter | Description | Example |
-|-----------|-------------|---------|
-| model_path | Path to the model to evaluate | `model_output/sft/global_step10/converted` |
-| result_name | Name identifier for output directory | `sft_nonthink` |
-| enable_thinking | `true` or `false` | `false` |
+Run layer leave-one-out sensitivity on AD sample-1000:
 
-**Examples**:
 ```bash
-# Without thinking mode, path: /home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/cc4d0b5b7294ecf75e40be1c77fa6b7d284bb84b
-bash eval_script.sh \
-    /home/guowei/OneRec-1.7B \
-    OneRec-1.7B-baseline \
-    false
-
-# With thinking mode
-bash eval_script.sh \
-    /path/to/model \
-    model_think_test \
-    true
+bash fake_quant/run_layer_sensitivity.sh
 ```
 
-For debugging purposes, you can add `--sample_size 10` to each python command in `eval_script.sh` to run evaluation on a smaller subset of data.
+## Retained Structure
 
-
-### Step 5: View Results
-
-After evaluation completes, results are saved in:
-```
-./results/v1.0/results_<result_name>/
-```
-
-Log files are located at:
-```
-./auto_eval_logs/v1.0/<result_name>.log
+```text
+benchmark/      # RecIF-Bench loaders/evaluators used by ../fake_quant
+scripts/        # offline quantization and analysis scripts
+results/        # selected experiment summaries
+models/         # lightweight offline quantization artifacts/configs
 ```
 
+## Notes
 
----
+The current research path focuses on AD SID prediction. Non-AD task code may still exist under `benchmark/tasks/v1_0/` because the registry and shared evaluator utilities are still useful, but API-based tasks are not part of the active workflow.
 
-## Evaluation Tasks
-
-| Task Name | Source | Description |
-|-----------|--------|-------------|
-| ad | Kuaishou Internal | 27,677 | Predict next clicked advertisement |
-| product | Kuaishou Internal | 27,910 | Predict next clicked product |
-| interactive | Kuaishou Internal | 1,000 | Predict next interacted video |
-| video | Kuaishou Internal | 38,781  | Next video prediction |
-| label_cond | Kuaishou Internal | 34,891 | Predict next video given specified consumption behavior |
-| label_pred | Kuaishou Internal | 346,190 | Predict user engagement with video content |
-| item_understand | Kuaishou Internal | 500 | Video SID to Caption generation task |
-| rec_reason | Kuaishou Internal | 470 | Recommendation reason inference |
-
-
-
+For detailed experiment context, see `CODEX_README.md` and `../fake_quant/MAIN.md`.
