@@ -9,11 +9,21 @@ import torch
 import torch.nn as nn
 
 from .modules import FakeQuantLinear
-from .quant import ActQuant, ActQuantMode, fp8_activation_per_token
+from .quant import (
+    ActQuant,
+    ActQuantMode,
+    fp8_activation_per_token,
+    fp8_activation_static_tensor,
+)
+from .static_activation import compute_static_tensor_activation_scales_for_model
 from .smoothquant.core import (
     SmoothQuantLinear,
     compute_smooth_scales_for_model,
     load_activation_absmax,
+)
+from .ranking_margin.core import (
+    compute_ranking_margin_smooth_scales_for_model,
+    load_rank_importance,
 )
 
 
@@ -30,6 +40,7 @@ def apply_fp8_fake_quant(
     *,
     act_quant: ActQuant = "none",
     act_quant_mode: ActQuantMode = "per_linear",
+    activation_absmax_path: str | None = None,
     skip_module_names: Iterable[str] = ("lm_head",),
     target_regex: str | None = None,
     skip_regex: str | None = None,
@@ -43,18 +54,27 @@ def apply_fp8_fake_quant(
     skip_names = set(skip_module_names)
     target_pattern = re.compile(target_regex) if target_regex else None
     skip_pattern = re.compile(skip_regex) if skip_regex else None
+    activation_static_scales = _load_static_activation_scales(
+        model,
+        act_quant=act_quant,
+        activation_absmax_path=activation_absmax_path,
+        skip_module_names=skip_names,
+        target_regex=target_regex,
+        skip_regex=skip_regex,
+    )
     linear_act_quant = "none" if act_quant_mode == "shared_input" else act_quant
     replaced, skipped = _replace_children(
         module=model,
         prefix="",
         act_quant=linear_act_quant,
+        activation_static_scales=activation_static_scales,
         skip_module_names=skip_names,
         target_pattern=target_pattern,
         skip_pattern=skip_pattern,
     )
     shared_attention_modules = 0
     shared_mlp_modules = 0
-    if act_quant == "per_token" and act_quant_mode == "shared_input":
+    if act_quant in ("per_token", "static_tensor") and act_quant_mode == "shared_input":
         shared_attention_modules, shared_mlp_modules = _install_shared_input_qdq(model)
 
     return FakeQuantSummary(
@@ -70,6 +90,10 @@ def apply_smoothquant_fp8_fake_quant(
     *,
     activation_absmax_path: str,
     alpha: float = 0.5,
+    rank_importance_path: str | None = None,
+    importance_beta: float = 0.25,
+    importance_clip_min: float = 0.25,
+    importance_clip_max: float = 4.0,
     act_quant: ActQuant = "none",
     act_quant_mode: ActQuantMode = "per_linear",
     skip_module_names: Iterable[str] = ("lm_head",),
@@ -77,6 +101,8 @@ def apply_smoothquant_fp8_fake_quant(
     skip_regex: str | None = None,
 ) -> FakeQuantSummary:
     """Apply SmoothQuant-style smoothing plus FP8 fake-quant Linear wrappers."""
+    if act_quant == "static_tensor":
+        raise ValueError("static_tensor activation quantization is only implemented for fp8_weight_channel.")
     if act_quant_mode not in ("per_linear", "shared_input"):
         raise ValueError(f"Unsupported act_quant_mode: {act_quant_mode}")
     if act_quant == "none" and act_quant_mode != "per_linear":
@@ -86,14 +112,29 @@ def apply_smoothquant_fp8_fake_quant(
     target_pattern = re.compile(target_regex) if target_regex else None
     skip_pattern = re.compile(skip_regex) if skip_regex else None
     activation_absmax = load_activation_absmax(activation_absmax_path)
-    smooth_scales = compute_smooth_scales_for_model(
-        model,
-        activation_absmax,
-        alpha=alpha,
-        skip_module_names=skip_names,
-        target_regex=target_regex,
-        skip_regex=skip_regex,
-    )
+    if rank_importance_path:
+        rank_importance = load_rank_importance(rank_importance_path)
+        smooth_scales = compute_ranking_margin_smooth_scales_for_model(
+            model,
+            activation_absmax,
+            rank_importance,
+            alpha=alpha,
+            beta=importance_beta,
+            clip_min=importance_clip_min,
+            clip_max=importance_clip_max,
+            skip_module_names=skip_names,
+            target_regex=target_regex,
+            skip_regex=skip_regex,
+        )
+    else:
+        smooth_scales = compute_smooth_scales_for_model(
+            model,
+            activation_absmax,
+            alpha=alpha,
+            skip_module_names=skip_names,
+            target_regex=target_regex,
+            skip_regex=skip_regex,
+        )
 
     linear_act_quant = "none" if act_quant_mode == "shared_input" else act_quant
     smooth_input = act_quant_mode != "shared_input"
@@ -126,6 +167,7 @@ def _replace_children(
     *,
     prefix: str,
     act_quant: ActQuant,
+    activation_static_scales: dict[str, torch.Tensor] | None,
     skip_module_names: set[str],
     target_pattern: re.Pattern[str] | None,
     skip_pattern: re.Pattern[str] | None,
@@ -149,7 +191,20 @@ def _replace_children(
             if target_pattern is not None and target_pattern.search(full_name) is None:
                 skipped += 1
                 continue
-            setattr(module, child_name, FakeQuantLinear(child, act_quant=act_quant))
+            activation_static_scale = None
+            if activation_static_scales is not None:
+                if activation_static_scales is None or full_name not in activation_static_scales:
+                    raise KeyError(f"Missing static activation scale for Linear module: {full_name}")
+                activation_static_scale = activation_static_scales[full_name]
+            setattr(
+                module,
+                child_name,
+                FakeQuantLinear(
+                    child,
+                    act_quant=act_quant,
+                    activation_static_scale=activation_static_scale,
+                ),
+            )
             replaced += 1
             continue
 
@@ -157,6 +212,7 @@ def _replace_children(
             module=child,
             prefix=full_name,
             act_quant=act_quant,
+            activation_static_scales=activation_static_scales,
             skip_module_names=skip_module_names,
             target_pattern=target_pattern,
             skip_pattern=skip_pattern,
@@ -267,6 +323,29 @@ def _uses_fake_quant_linear(module: Any) -> bool:
     return isinstance(module, (FakeQuantLinear, SmoothQuantLinear))
 
 
+def _load_static_activation_scales(
+    model: nn.Module,
+    *,
+    act_quant: ActQuant,
+    activation_absmax_path: str | None,
+    skip_module_names: set[str],
+    target_regex: str | None,
+    skip_regex: str | None,
+) -> dict[str, torch.Tensor] | None:
+    if act_quant != "static_tensor":
+        return None
+    if not activation_absmax_path:
+        raise ValueError("act_quant='static_tensor' requires --static_act_scales_path.")
+    activation_absmax = load_activation_absmax(activation_absmax_path)
+    return compute_static_tensor_activation_scales_for_model(
+        model,
+        activation_absmax,
+        skip_module_names=skip_module_names,
+        target_regex=target_regex,
+        skip_regex=skip_regex,
+    )
+
+
 def _shared_prepare_input(modules: tuple[Any, ...], x):
     quant_modules = [module for module in modules if _uses_fake_quant_linear(module)]
     if not quant_modules:
@@ -275,6 +354,14 @@ def _shared_prepare_input(modules: tuple[Any, ...], x):
     smooth_modules = [module for module in quant_modules if isinstance(module, SmoothQuantLinear)]
     if smooth_modules:
         x = smooth_modules[0].smooth_activation(x)
+    static_scales = [
+        module.activation_static_scale
+        for module in quant_modules
+        if getattr(module, "activation_static_scale", None) is not None
+    ]
+    if static_scales:
+        scale = torch.stack([s.detach().float().to(x.device) for s in static_scales]).amax()
+        return fp8_activation_static_tensor(x, scale)
     return fp8_activation_per_token(x)
 
 

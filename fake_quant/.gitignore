@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
-activation_profiles/
+activation_probe/activation_profiles/
 results/
 smoothquant/scales/
+ranking_margin/importances/
+static_activation/scales/
 weight_probe/results/

@@ -16,12 +16,6 @@ Run SmoothQuant-style FP8 fake quant:
 bash fake_quant/smoothquant/run_smoothquant_ad.sh
 ```
 
-Run layer leave-one-out sensitivity on AD sample-1000:
-
-```bash
-bash fake_quant/run_layer_sensitivity.sh
-```
-
 ## Retained Structure
 
 ```text

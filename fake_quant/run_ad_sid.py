@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
         default="fp8_weight_channel",
         choices=["none", "fp8_weight_channel", "fp8_smoothquant"],
     )
-    parser.add_argument("--act_quant", default="none", choices=["none", "per_token"])
+    parser.add_argument("--act_quant", default="none", choices=["none", "per_token", "static_tensor"])
     parser.add_argument(
         "--act_quant_mode",
         default="per_linear",
@@ -76,7 +76,35 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to SmoothQuant calibration absmax file produced by collect_smooth_scales.py.",
     )
+    parser.add_argument(
+        "--static_act_scales_path",
+        default=None,
+        help="Path to calibrated activation absmax file for act_quant=static_tensor.",
+    )
     parser.add_argument("--smooth_alpha", type=float, default=0.5, help="SmoothQuant alpha in [0, 1].")
+    parser.add_argument(
+        "--smooth_rank_importance_path",
+        default=None,
+        help="Optional ranking-margin importance file produced by ranking_margin/collect_importance.py.",
+    )
+    parser.add_argument(
+        "--smooth_importance_beta",
+        type=float,
+        default=0.25,
+        help="Exponent for ranking-margin importance correction. 0 recovers plain SmoothQuant.",
+    )
+    parser.add_argument(
+        "--smooth_importance_clip_min",
+        type=float,
+        default=0.25,
+        help="Lower clip for geometric-mean-normalized ranking importance.",
+    )
+    parser.add_argument(
+        "--smooth_importance_clip_max",
+        type=float,
+        default=4.0,
+        help="Upper clip for geometric-mean-normalized ranking importance.",
+    )
     parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--num_beams", type=int, default=32)
     parser.add_argument("--num_return_sequences", type=int, default=32)
@@ -102,6 +130,13 @@ def parse_sample_size(value: Any) -> Any:
     if value == "full":
         return "full"
     return int(value)
+
+
+def resolve_repo_path(path: str | os.PathLike[str]) -> Path:
+    path_obj = Path(path).expanduser()
+    if path_obj.is_absolute():
+        return path_obj
+    return PROJECT_ROOT / path_obj
 
 
 def set_seed(seed: int) -> None:
@@ -173,7 +208,7 @@ def generate_one(
 
 
 def result_path(output_dir: str, model_name: str, split: str) -> Path:
-    return Path(output_dir) / model_name / "ad" / f"{split}_generated.json"
+    return resolve_repo_path(output_dir) / model_name / "ad" / f"{split}_generated.json"
 
 
 def save_results(
@@ -211,7 +246,12 @@ def save_results(
             "target_regex": args.target_regex,
             "skip_regex": args.skip_regex,
             "smooth_scales_path": args.smooth_scales_path,
+            "static_act_scales_path": args.static_act_scales_path,
             "smooth_alpha": args.smooth_alpha,
+            "smooth_rank_importance_path": args.smooth_rank_importance_path,
+            "smooth_importance_beta": args.smooth_importance_beta,
+            "smooth_importance_clip_min": args.smooth_importance_clip_min,
+            "smooth_importance_clip_max": args.smooth_importance_clip_max,
             "quantize_lm_head": args.quantize_lm_head,
             "dtype": args.dtype,
             "num_beams": args.num_beams,
@@ -225,10 +265,12 @@ def save_results(
 
 
 def maybe_evaluate(output_dir: str, data_dir: str, overwrite: bool) -> None:
+    output_root = resolve_repo_path(output_dir)
+    data_root = resolve_repo_path(data_dir)
     Benchmark.evaluate_dev(
-        generation_results_dir=output_dir,
-        output_path=str(Path(output_dir) / "eval_results.json"),
-        data_dir=data_dir,
+        generation_results_dir=str(output_root),
+        output_path=str(output_root / "eval_results.json"),
+        data_dir=str(data_root),
         overwrite=overwrite,
         task_types=["ad"],
     )
@@ -243,6 +285,7 @@ def main() -> None:
 
     model_name = args.model_name or Path(args.model_path.rstrip("/")).name
     output_file = result_path(args.output_dir, model_name, args.split)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     if output_file.exists() and not args.overwrite:
         raise FileExistsError(f"Generation file exists: {output_file}. Use --overwrite to regenerate.")
 
@@ -267,6 +310,7 @@ def main() -> None:
             model,
             act_quant=args.act_quant,
             act_quant_mode=args.act_quant_mode,
+            activation_absmax_path=args.static_act_scales_path,
             skip_module_names=skip_names,
             target_regex=args.target_regex,
             skip_regex=args.skip_regex,
@@ -275,6 +319,7 @@ def main() -> None:
             f"Applied FP8 fake quant: replaced_linears={summary.replaced_linears}, "
             f"skipped_linears={summary.skipped_linears}, act_quant={args.act_quant}, "
             f"act_quant_mode={args.act_quant_mode}, "
+            f"static_act_scales_path={args.static_act_scales_path}, "
             f"shared_attention_modules={summary.shared_attention_modules}, "
             f"shared_mlp_modules={summary.shared_mlp_modules}"
         )
@@ -286,6 +331,10 @@ def main() -> None:
             model,
             activation_absmax_path=args.smooth_scales_path,
             alpha=args.smooth_alpha,
+            rank_importance_path=args.smooth_rank_importance_path,
+            importance_beta=args.smooth_importance_beta,
+            importance_clip_min=args.smooth_importance_clip_min,
+            importance_clip_max=args.smooth_importance_clip_max,
             act_quant=args.act_quant,
             act_quant_mode=args.act_quant_mode,
             skip_module_names=skip_names,
@@ -297,6 +346,8 @@ def main() -> None:
             f"skipped_linears={summary.skipped_linears}, act_quant={args.act_quant}, "
             f"act_quant_mode={args.act_quant_mode}, smooth_alpha={args.smooth_alpha}, "
             f"smooth_scales_path={args.smooth_scales_path}, "
+            f"smooth_rank_importance_path={args.smooth_rank_importance_path}, "
+            f"smooth_importance_beta={args.smooth_importance_beta}, "
             f"shared_attention_modules={summary.shared_attention_modules}, "
             f"shared_mlp_modules={summary.shared_mlp_modules}"
         )
@@ -307,7 +358,7 @@ def main() -> None:
     task_config = get_task_config("ad")
     prompt_token = task_config.get("generation_config", {}).get("prompt_token", "<|sid_begin|>")
     sample_size = parse_sample_size(args.sample_size)
-    test_data = load_ad_data(tokenizer, args.data_dir, args.split, sample_size)
+    test_data = load_ad_data(tokenizer, str(resolve_repo_path(args.data_dir)), args.split, sample_size)
 
     generations: Dict[str, List[str]] = {}
     start = time.time()

@@ -16,7 +16,7 @@ TOPK="${TOPK:-32}"
 DTYPE="${DTYPE:-bfloat16}"
 DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
-OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/activation_profiles/${VERSION}/channel_overlap_sample_${SAMPLE_INDEX}}"
+OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/activation_probe/activation_profiles/${VERSION}/channel_overlap_sample_${SAMPLE_INDEX}}"
 
 if [[ ! -e "$MODEL_PATH" && -e "/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B" ]]; then
   MODEL_PATH="/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B"

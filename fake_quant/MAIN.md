@@ -11,11 +11,16 @@
 - 目前的量化目标当前模型离线存储数值类型为bf16，目标量化到fp8（暂定为E4M3格式），相关资料表明，Qwen3 bf16->fp8的量化推理速度能提升一倍左右，显存可减少70%左右
 
 ## 量化策略
-所有的量化层劫持实现都在quant.py中，目前实现的量化层包括以下内容：
+所有的量化层劫持实现都在quant.py中，目前实现的量化层/平滑算法包括以下内容：
 1. fp8_weight_per_channel():
     per-channel版本的模型权重量化，在模型读取截断一次性替换模型参数数值
 2. fp8_activation_per_token()：
     per-token版本的激活值动态量化，也就是根据输入的激活值，当场计算scale进行量化
+3. Smoothquant：
+    在模型量化前先利用calibration set为每个channel提前计算平滑scale，再在平滑后的weight和activation上进行量化
+
+v1的实现是纯数值模拟，虽然有用上`torch.float8_e4m3fn`，但本质上只是当成个“筛子”，来做数值上的转换，模型的所有计算都是在bf16来做的
+v2的实现真正使用了fp8 tensor（既然5090和H100支持，那为什么不用呢？），具体而言就是量化tensor的类型就保持`torch.float8_e4m3fn`，在部分运算上，使用`torch._scaled_mm`来进行fp8 tensor之间的矩阵计算
 
 ### weight quant
 weight是经过漫长的模型训练的，因为细粒度的梯度下降和正则化，weight整体的分布会一直被往0附近压，所以权重的数值分布一般来说是非常紧凑，平滑，整体呈现正态分布。由于权重天生的偏正态分布，所以一般来说可以直接使用min-max方法来量化，不会有太明显的异常值来拉伸量化区间。
@@ -29,11 +34,17 @@ weight是经过漫长的模型训练的，因为细粒度的梯度下降和正�
 对于activation的量化来说，由于LLM场景下输入的不确定性，如果要保精度的话，一般是采用在线动态量化策略，如果你的分布可以比较好地预测，也可以使用离线计算scale，然后线上直接量化的策略。而量化的方法有些论文更倾向于采用percentile方法来适配activation存在大异常值的场景，来保大多数数值量化精度损失
 
 目前已经对激活值进行初步的探测，激活值探测开销比较大，所以还没有形成统一的结论。
-- 32个sample来统计不同token的激活值分布，结果在fake_quant/activation_profiles/v1.0/OneRec-1.7B-ad-sample-32/plots，不同token的分布基本都保持一直，随着层数逐渐升高，分布曲线逐渐往高值扩张，同时chat_special token出现异常高单值
-- 对单个样本来细致查看各层激活值，发现在channel维度上更容易出现普遍异常值现象，token维度上比较难观察到，结果在fake_quant/activation_profiles/v1.0/token_channel_sample_0；对每层异常值channel进行统计，查看异常通道是否存在重叠现象，对该样本的统计发现对于attn和ffn前的异常值channel一般都重叠，而内部attn/ffn内部的线性层（attn o_proj/mlp down_proj）就不太重叠。但是这块还需要再进行拓展实验，一个是样本数量，不同domain样本；另外一个是token数量，目前只看了最后的100多个token，还没看到开头的sink token
+- 32个sample来统计不同token的激活值分布，结果在fake_quant/activation_probe/activation_profiles/v1.0/OneRec-1.7B-ad-sample-32/plots，不同token的分布基本都保持一直，随着层数逐渐升高，分布曲线逐渐往高值扩张，同时chat_special token出现异常高单值
+- 对单个样本来细致查看各层激活值，发现在channel维度上更容易出现普遍异常值现象，token维度上比较难观察到，结果在fake_quant/activation_probe/activation_profiles/v1.0/token_channel_sample_0；对每层异常值channel进行统计，查看异常通道是否存在重叠现象，对该样本的统计发现对于attn和ffn前的异常值channel一般都重叠，而内部attn/ffn内部的线性层（attn o_proj/mlp down_proj）就不太重叠。但是这块还需要再进行拓展实验，一个是样本数量，不同domain样本；另外一个是token数量，目前只看了最后的100多个token，还没看到开头的sink token
 
 ## baseline
 - OneRec-V2：offline weight_linear_fp8 + activation_dynamic_fp8，MoE GEMM fp8，数值敏感或者收益低的模块保留fp16（文中没提到是哪里）
+  - 仅对计算最密集的算子应用量化，包含 Attention 模块中的 qkvo 投影层、Dense FFN 中的线性变换（Linear 层），以及 Sparse MoE 中的分组 GEMM 操作
+  - 对于其他对数值更敏感或计算占比不高的组件，模型依然保持原始的 FP16 精度运行，以降低数值风险
+  - 权重 (Weights)：离线计算缩放因子，采用按通道（by channel）的粒度量化为 FP8 。在 GPU 显存中，这些权重以 (FP8 权重, FP32 缩放因子) 的组合形式存储
+  - 激活值 (Activations)：在推理运行时，采用按 Token（by token）的粒度动态计算缩放因子，并量化为 FP8
+  - 乘法与累加 (MatMul)：矩阵乘法阶段使用 FP8 TensorCore 进行乘法运算，但为了保证精度，累加操作（Accumulation）是在 FP32 精度下进行的乘法与累加 (MatMul)：矩阵乘法阶段使用 FP8 TensorCore 进行乘法运算，但为了保证精度，累加操作（Accumulation）是在 FP32 精度下进行的
+  - 针对 MoE（混合专家）模块中的分组 GEMM 操作，为了适应其特殊的路由和并行执行结构，论文采用了分块（block-wise）量化设计：激活值的量化粒度：在张量的最后一个维度上，按照 1x128 的块大小进行量化；权重的量化粒度：按照 128x128 的块大小进行量化
 
 ### AD full fake-quant baseline
 
@@ -44,6 +55,7 @@ weight是经过漫长的模型训练的，因为细粒度的梯度下降和正�
 | HF baseline | BF16，无 fake quant | 0.0193 | 0.2166 | 0.0750 | 0.2024 | 0.0695 | 120.94 | 0.2622 |
 | FP8 weight-only | Linear weight FP8 per-channel，activation BF16 | 0.0199 | 0.2112 | 0.0729 | 0.1973 | 0.0674 | 120.86 | 0.2620 |
 | FP8 weight+act | Linear weight FP8 per-channel，activation FP8 per-token dynamic(shared-input) | 0.0196 | 0.2040 | 0.0701 | 0.1902 | 0.0648 | 212.64 | 0.4610 |
+| SmoothQuant & FP8 weight+act |Linear weight FP8 per-channel，activation FP8 per-token dynamic(shared-input) | 0.0182 | 0.2053 | 0.0710 | 0.1911 | 0.0659 | 421 | 0.9180 |
 
 相对 baseline，weight-only 的 `pid_recall@32` 下降约 0.0021，weight+act 的 `pid_recall@32` 下降约 0.0047。初步看 weight FP8 本身不是主要难点，activation dynamic fake quant 带来的推荐指标扰动更明显；同时 fake quant 的 activation QDQ 会显著增加 PyTorch 路径耗时，因此该耗时不能作为真实低精度推理速度结论。
 
@@ -54,7 +66,10 @@ weight是经过漫长的模型训练的，因为细粒度的梯度下降和正�
 | 实验 | pass@32 | recall@32 | pid_pass@32 | pid_recall@32 | time(min) |
 |---|---:|---:|---:|---:|---:|
 | baseline | 0.237 | 0.08750 | 0.223 | 0.08284 | 9.03 |
-| all_quant | 0.237 | 0.08300 | 0.226 | 0.07889 | 15.08 |
+| weight-only | 0.234 | 0.8293 | 0.222 | 0.07829 | 9.01 |
+| weight & act. | 0.237 | 0.08300 | 0.226 | 0.07889 | 15.08 |
+| smoothquant + weight & act. | 0.233 | 0.0839 | 0.221 | 0.08179 | 18.76 |
+| ranking_margin smoothquant + weight & act. | 0.231 | 0.0833 | 0.216 | 0.0788 | 17.76 |
 
 `gain_pid_recall@32 = restore_layer_i - all_quant`，正数表示恢复该层为 BF16 有帮助。
 

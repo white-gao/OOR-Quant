@@ -25,7 +25,7 @@ from benchmark.tasks.v1_0.registry import get_loader, get_task_config
 
 DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data"
-DEFAULT_OUTPUT_DIR = "fake_quant/activation_profiles/v1.0/channel_overlap_sample_0"
+DEFAULT_OUTPUT_DIR = "fake_quant/activation_probe/activation_profiles/v1.0/channel_overlap_sample_0"
 FALLBACK_MODEL_PATHS = [
     "/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B",
     "/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B",

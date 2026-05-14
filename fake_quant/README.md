@@ -16,12 +16,6 @@ HF baseline, FP8 weight-only, and FP8 weight+activation fake quant:
 bash fake_quant/run_hf_ad_full_quant.sh
 ```
 
-Layer leave-one-out sensitivity on AD sample-1000:
-
-```bash
-bash fake_quant/run_layer_sensitivity.sh
-```
-
 SmoothQuant-style FP8 fake quant:
 
 ```bash
@@ -56,11 +50,32 @@ Weight + dynamic activation FP8 fake quant:
 --quant_scheme fp8_weight_channel --act_quant per_token --act_quant_mode shared_input
 ```
 
+Weight + static activation FP8 fake quant:
+
+```bash
+python fake_quant/smoothquant/collect_smooth_scales.py \
+  --sample_size 128 \
+  --sample_offset 1000 \
+  --output_path fake_quant/static_activation/scales/onerec_ad_static_tensor_absmax_sample128_offset1000.pt
+
+python fake_quant/run_ad_sid.py \
+  --quant_scheme fp8_weight_channel \
+  --act_quant static_tensor \
+  --act_quant_mode shared_input \
+  --static_act_scales_path fake_quant/static_activation/scales/onerec_ad_static_tensor_absmax_sample128_offset1000.pt
+```
+
+The convenience script can run this branch with:
+
+```bash
+RUN_WEIGHT_ONLY=false RUN_WEIGHT_ACT_STATIC=true bash fake_quant/run_hf_ad_full_quant.sh
+```
+
 SmoothQuant-style FP8 fake quant:
 
 ```bash
 --quant_scheme fp8_smoothquant \
---smooth_scales_path fake_quant/smoothquant/scales/onerec_ad_smoothquant_absmax_sample128.pt \
+--smooth_scales_path fake_quant/smoothquant/scales/onerec_ad_smoothquant_absmax_sample128_offset1000.pt \
 --smooth_alpha 0.5 \
 --act_quant per_token \
 --act_quant_mode shared_input
@@ -78,11 +93,13 @@ Optional layer selection/restoration:
 ```text
 fake_quant/
   quant.py / modules.py / apply.py   # FP8 fake-quant implementation
+  static_activation/                  # static activation scale utilities
   run_ad_sid.py                      # HF AD SID generation entrypoint
   run_hf_ad_full_quant.sh            # baseline / weight-only / weight+act runs
-  run_layer_sensitivity.sh           # layer leave-one-out sensitivity
   smoothquant/                       # SmoothQuant calibration and runner
+  ranking_margin/                    # ranking-margin SmoothQuant variant
   activation_probe/                  # activation outlier probing tools
   weight_probe/                      # weight distribution probing tools
+  tests/                             # unit tests for fake-quant utilities
   results/                           # local fake-quant benchmark outputs
 ```

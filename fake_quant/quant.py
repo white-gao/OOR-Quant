@@ -53,5 +53,14 @@ def fp8_activation_per_token(
     return fp8_fake_quant(x, scale, fp8_max=fp8_max)
 
 
-ActQuant = Literal["none", "per_token"]
+def fp8_activation_static_tensor(
+    x: torch.Tensor,
+    scale: torch.Tensor,
+    fp8_max: float = FP8_MAX,
+) -> torch.Tensor:
+    """FP8 fake quantize activations with one calibrated tensor scale."""
+    return fp8_fake_quant(x, scale.to(device=x.device), fp8_max=fp8_max)
+
+
+ActQuant = Literal["none", "per_token", "static_tensor"]
 ActQuantMode = Literal["per_linear", "shared_input"]

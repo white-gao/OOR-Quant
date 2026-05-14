@@ -15,7 +15,7 @@ bash fake_quant/activation_probe/run_activation_profile.sh
 Main outputs:
 
 ```text
-fake_quant/activation_profiles/v1.0/OneRec-1.7B-ad-sample-32/
+fake_quant/activation_probe/activation_profiles/v1.0/OneRec-1.7B-ad-sample-32/
 ```
 
 ## Token-Channel Plots
@@ -29,7 +29,7 @@ bash fake_quant/activation_probe/run_token_channel_plots.sh
 Main outputs:
 
 ```text
-fake_quant/activation_profiles/v1.0/token_channel_sample_0/
+fake_quant/activation_probe/activation_profiles/v1.0/token_channel_sample_0/
 ```
 
 ## Channel Overlap
@@ -43,7 +43,7 @@ bash fake_quant/activation_probe/run_channel_overlap.sh
 Main outputs:
 
 ```text
-fake_quant/activation_profiles/v1.0/channel_overlap_sample_0/
+fake_quant/activation_probe/activation_profiles/v1.0/channel_overlap_sample_0/
 ```
 
 Default captured nodes:
@@ -54,4 +54,3 @@ attn_o_input
 ffn_gate_up_input
 ffn_down_input
 ```
-

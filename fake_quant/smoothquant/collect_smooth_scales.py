@@ -39,6 +39,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_path", default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--split", default="test", choices=["test"])
     parser.add_argument("--sample_size", default=128, type=int)
+    parser.add_argument(
+        "--sample_offset",
+        default=0,
+        type=int,
+        help="Start offset within the split. Use 1000 to avoid overlap with eval sample1000.",
+    )
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--device_map", default=None)
@@ -77,13 +83,47 @@ def resolve_input_device(model: torch.nn.Module, fallback: str) -> torch.device:
         return torch.device(fallback)
 
 
-def load_ad_data(tokenizer: Any, data_dir: str, split: str, sample_size: int) -> Dict[str, Dict[str, Any]]:
+def slice_calibration_data(
+    data: Dict[str, Dict[str, Any]],
+    *,
+    sample_size: int,
+    sample_offset: int,
+) -> Dict[str, Dict[str, Any]]:
+    if sample_size <= 0:
+        raise ValueError(f"sample_size must be positive, got {sample_size}")
+    if sample_offset < 0:
+        raise ValueError(f"sample_offset must be non-negative, got {sample_offset}")
+
+    items = list(data.items())
+    end = sample_offset + sample_size
+    if end > len(items):
+        raise ValueError(
+            f"Not enough samples for calibration slice: offset={sample_offset}, "
+            f"sample_size={sample_size}, total={len(items)}"
+        )
+    return dict(items[sample_offset:end])
+
+
+def load_ad_data(
+    tokenizer: Any,
+    data_dir: str,
+    split: str,
+    sample_size: int,
+    sample_offset: int = 0,
+) -> Dict[str, Dict[str, Any]]:
     loader = get_loader(
         task_name="ad",
         data_dir=data_dir,
         enable_thinking=False,
         tokenizer=tokenizer,
     )
+    if sample_offset > 0:
+        data = loader.load_data(split=split, sample_size="full")
+        return slice_calibration_data(
+            data,
+            sample_size=sample_size,
+            sample_offset=sample_offset,
+        )
     return loader.load_data(split=split, sample_size=sample_size)
 
 
@@ -187,7 +227,13 @@ def main() -> None:
     input_device = resolve_input_device(model, args.device)
     task_config = get_task_config("ad")
     prompt_token = task_config.get("generation_config", {}).get("prompt_token", "<|sid_begin|>")
-    test_data = load_ad_data(tokenizer, args.data_dir, args.split, args.sample_size)
+    test_data = load_ad_data(
+        tokenizer,
+        args.data_dir,
+        args.split,
+        args.sample_size,
+        sample_offset=args.sample_offset,
+    )
     stats = collect_activation_absmax(
         model,
         tokenizer,
@@ -207,6 +253,8 @@ def main() -> None:
             "data_dir": args.data_dir,
             "split": args.split,
             "sample_size": args.sample_size,
+            "sample_offset": args.sample_offset,
+            "sample_range": [args.sample_offset, args.sample_offset + args.sample_size],
             "dtype": args.dtype,
             "seed": args.seed,
             "target_regex": args.target_regex,

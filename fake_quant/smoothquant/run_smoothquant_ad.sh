@@ -12,24 +12,24 @@ DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
 VERSION="${VERSION:-v1.0}"
 SAMPLE_SIZE="${SAMPLE_SIZE:-1000}"
 CALIB_SAMPLE_SIZE="${CALIB_SAMPLE_SIZE:-128}"
+CALIB_SAMPLE_OFFSET="${CALIB_SAMPLE_OFFSET:-1000}"
 NUM_BEAMS="${NUM_BEAMS:-32}"
 NUM_RETURN_SEQUENCES="${NUM_RETURN_SEQUENCES:-32}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-3}"
 DTYPE="${DTYPE:-bfloat16}"
-DEVICE="${DEVICE:-cuda}"
+DEVICE="${DEVICE:-cuda:1}"
 SEED="${SEED:-42}"
 EVALUATE="${EVALUATE:-true}"
 OVERWRITE="${OVERWRITE:-true}"
 SKIP_CALIB="${SKIP_CALIB:-false}"
-ACT_QUANT_MODE="${ACT_QUANT_MODE:-shared_input}"
 SMOOTH_ALPHA="${SMOOTH_ALPHA:-0.5}"
 TARGET_REGEX="${TARGET_REGEX:-}"
 SKIP_REGEX="${SKIP_REGEX:-}"
 
 BASE_OUTPUT_ROOT="${BASE_OUTPUT_ROOT:-fake_quant/results/${VERSION}}"
-SCALE_PATH="${SCALE_PATH:-fake_quant/smoothquant/scales/onerec_ad_smoothquant_absmax_sample${CALIB_SAMPLE_SIZE}.pt}"
-OUTPUT_DIR="${OUTPUT_DIR:-${BASE_OUTPUT_ROOT}/results_OneRec-1.7B-hf-fake-fp8-smoothquant-a${SMOOTH_ALPHA}-ad-${SAMPLE_SIZE}}"
-MODEL_NAME="${MODEL_NAME:-OneRec-1.7B-hf-fake-fp8-smoothquant-a${SMOOTH_ALPHA}}"
+SCALE_PATH="${SCALE_PATH:-fake_quant/smoothquant/scales/onerec_ad_smoothquant_absmax_sample${CALIB_SAMPLE_SIZE}_offset${CALIB_SAMPLE_OFFSET}.pt}"
+OUTPUT_DIR="${OUTPUT_DIR:-${BASE_OUTPUT_ROOT}/results_OneRec-1.7B-hf-fake-fp8-smoothquant-a${SMOOTH_ALPHA}-calib${CALIB_SAMPLE_SIZE}-offset${CALIB_SAMPLE_OFFSET}-ad-${SAMPLE_SIZE}}"
+MODEL_NAME="${MODEL_NAME:-OneRec-1.7B-hf-fake-fp8-smoothquant-a${SMOOTH_ALPHA}-calib${CALIB_SAMPLE_SIZE}-offset${CALIB_SAMPLE_OFFSET}}"
 
 COMMON_ARGS=(
   --model_path "$MODEL_PATH"
@@ -51,8 +51,9 @@ echo "MODEL_PATH=${MODEL_PATH}"
 echo "DATA_DIR=${DATA_DIR}"
 echo "SAMPLE_SIZE=${SAMPLE_SIZE}"
 echo "CALIB_SAMPLE_SIZE=${CALIB_SAMPLE_SIZE}"
+echo "CALIB_SAMPLE_OFFSET=${CALIB_SAMPLE_OFFSET}"
 echo "SMOOTH_ALPHA=${SMOOTH_ALPHA}"
-echo "ACT_QUANT_MODE=${ACT_QUANT_MODE}"
+echo "act_quant_mode=shared_input"
 echo "SCALE_PATH=${SCALE_PATH}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
 
@@ -61,6 +62,7 @@ if [[ "$SKIP_CALIB" != "true" || ! -f "$SCALE_PATH" ]]; then
   python fake_quant/smoothquant/collect_smooth_scales.py \
     "${COMMON_ARGS[@]}" \
     --sample_size "$CALIB_SAMPLE_SIZE" \
+    --sample_offset "$CALIB_SAMPLE_OFFSET" \
     --output_path "$SCALE_PATH"
 else
   echo "Skipping calibration; using existing SCALE_PATH."
@@ -74,7 +76,7 @@ EVAL_ARGS=(
   --max_new_tokens "$MAX_NEW_TOKENS"
   --quant_scheme fp8_smoothquant
   --act_quant per_token
-  --act_quant_mode "$ACT_QUANT_MODE"
+  --act_quant_mode shared_input
   --smooth_scales_path "$SCALE_PATH"
   --smooth_alpha "$SMOOTH_ALPHA"
   --output_dir "$OUTPUT_DIR"
