@@ -17,6 +17,7 @@ MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRe
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
 VERSION="${VERSION:-v1.0}"
 SAMPLE_SIZE="${SAMPLE_SIZE:-1000}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
 NUM_BEAMS="${NUM_BEAMS:-32}"
 NUM_RETURN_SEQUENCES="${NUM_RETURN_SEQUENCES:-32}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-3}"
@@ -31,6 +32,7 @@ RUN_WEIGHT_ONLY="${RUN_WEIGHT_ONLY:-true}"
 RUN_WEIGHT_ACT="${RUN_WEIGHT_ACT:-false}"
 RUN_WEIGHT_ACT_STATIC="${RUN_WEIGHT_ACT_STATIC:-false}"
 CALIB_SAMPLE_SIZE="${CALIB_SAMPLE_SIZE:-128}"
+CALIB_BATCH_SIZE="${CALIB_BATCH_SIZE:-1}"
 CALIB_SAMPLE_OFFSET="${CALIB_SAMPLE_OFFSET:-1000}"
 SKIP_STATIC_CALIB="${SKIP_STATIC_CALIB:-false}"
 TARGET_REGEX="${TARGET_REGEX:-}"
@@ -50,6 +52,7 @@ COMMON_ARGS=(
   --model_path "$MODEL_PATH"
   --data_dir "$DATA_DIR"
   --sample_size "$SAMPLE_SIZE"
+  --batch_size "$BATCH_SIZE"
   --num_beams "$NUM_BEAMS"
   --num_return_sequences "$NUM_RETURN_SEQUENCES"
   --max_new_tokens "$MAX_NEW_TOKENS"
@@ -73,6 +76,7 @@ fi
 echo "MODEL_PATH=${MODEL_PATH}"
 echo "DATA_DIR=${DATA_DIR}"
 echo "SAMPLE_SIZE=${SAMPLE_SIZE}"
+echo "BATCH_SIZE=${BATCH_SIZE}"
 echo "NUM_BEAMS=${NUM_BEAMS}"
 echo "NUM_RETURN_SEQUENCES=${NUM_RETURN_SEQUENCES}"
 echo "MAX_NEW_TOKENS=${MAX_NEW_TOKENS}"
@@ -81,6 +85,7 @@ echo "DEVICE=${DEVICE}"
 echo "SEED=${SEED}"
 echo "SKIP_DONE=${SKIP_DONE}"
 echo "CALIB_SAMPLE_SIZE=${CALIB_SAMPLE_SIZE}"
+echo "CALIB_BATCH_SIZE=${CALIB_BATCH_SIZE}"
 echo "CALIB_SAMPLE_OFFSET=${CALIB_SAMPLE_OFFSET}"
 echo "act_quant_mode=shared_input"
 echo "BASELINE_OUTPUT_DIR=${BASELINE_OUTPUT_DIR}"
@@ -149,6 +154,7 @@ if [[ "$RUN_WEIGHT_ACT_STATIC" == "true" ]]; then
       --device "$DEVICE" \
       --seed "$SEED" \
       --sample_size "$CALIB_SAMPLE_SIZE" \
+      --batch_size "$CALIB_BATCH_SIZE" \
       --sample_offset "$CALIB_SAMPLE_OFFSET" \
       --output_path "$STATIC_ACT_SCALE_PATH"
   else

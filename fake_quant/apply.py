@@ -21,10 +21,6 @@ from .smoothquant.core import (
     compute_smooth_scales_for_model,
     load_activation_absmax,
 )
-from .ranking_margin.core import (
-    compute_ranking_margin_smooth_scales_for_model,
-    load_rank_importance,
-)
 
 
 @dataclass
@@ -90,10 +86,8 @@ def apply_smoothquant_fp8_fake_quant(
     *,
     activation_absmax_path: str,
     alpha: float = 0.5,
-    rank_importance_path: str | None = None,
-    importance_beta: float = 0.25,
-    importance_clip_min: float = 0.25,
-    importance_clip_max: float = 4.0,
+    smooth_layer_min: int | None = None,
+    smooth_layer_cutoff: int | None = None,
     act_quant: ActQuant = "none",
     act_quant_mode: ActQuantMode = "per_linear",
     skip_module_names: Iterable[str] = ("lm_head",),
@@ -112,29 +106,14 @@ def apply_smoothquant_fp8_fake_quant(
     target_pattern = re.compile(target_regex) if target_regex else None
     skip_pattern = re.compile(skip_regex) if skip_regex else None
     activation_absmax = load_activation_absmax(activation_absmax_path)
-    if rank_importance_path:
-        rank_importance = load_rank_importance(rank_importance_path)
-        smooth_scales = compute_ranking_margin_smooth_scales_for_model(
-            model,
-            activation_absmax,
-            rank_importance,
-            alpha=alpha,
-            beta=importance_beta,
-            clip_min=importance_clip_min,
-            clip_max=importance_clip_max,
-            skip_module_names=skip_names,
-            target_regex=target_regex,
-            skip_regex=skip_regex,
-        )
-    else:
-        smooth_scales = compute_smooth_scales_for_model(
-            model,
-            activation_absmax,
-            alpha=alpha,
-            skip_module_names=skip_names,
-            target_regex=target_regex,
-            skip_regex=skip_regex,
-        )
+    smooth_scales = compute_smooth_scales_for_model(
+        model,
+        activation_absmax,
+        alpha=alpha,
+        skip_module_names=skip_names,
+        target_regex=target_regex,
+        skip_regex=skip_regex,
+    )
 
     linear_act_quant = "none" if act_quant_mode == "shared_input" else act_quant
     smooth_input = act_quant_mode != "shared_input"
@@ -144,6 +123,8 @@ def apply_smoothquant_fp8_fake_quant(
         act_quant=linear_act_quant,
         smooth_input=smooth_input,
         smooth_scales=smooth_scales,
+        smooth_layer_min=smooth_layer_min,
+        smooth_layer_cutoff=smooth_layer_cutoff,
         skip_module_names=skip_names,
         target_pattern=target_pattern,
         skip_pattern=skip_pattern,
@@ -230,6 +211,8 @@ def _replace_children_smoothquant(
     act_quant: ActQuant,
     smooth_input: bool,
     smooth_scales: dict[str, torch.Tensor],
+    smooth_layer_min: int | None,
+    smooth_layer_cutoff: int | None,
     skip_module_names: set[str],
     target_pattern: re.Pattern[str] | None,
     skip_pattern: re.Pattern[str] | None,
@@ -255,16 +238,16 @@ def _replace_children_smoothquant(
                 continue
             if full_name not in smooth_scales:
                 raise KeyError(f"Missing SmoothQuant scale for Linear module: {full_name}")
-            setattr(
-                module,
-                child_name,
-                SmoothQuantLinear(
+            if _uses_smoothquant_for_layer(full_name, smooth_layer_min, smooth_layer_cutoff):
+                replacement = SmoothQuantLinear(
                     child,
                     smooth_scale=smooth_scales[full_name],
                     act_quant=act_quant,
                     smooth_input=smooth_input,
-                ),
-            )
+                )
+            else:
+                replacement = FakeQuantLinear(child, act_quant=act_quant)
+            setattr(module, child_name, replacement)
             replaced += 1
             continue
 
@@ -274,6 +257,8 @@ def _replace_children_smoothquant(
             act_quant=act_quant,
             smooth_input=smooth_input,
             smooth_scales=smooth_scales,
+            smooth_layer_min=smooth_layer_min,
+            smooth_layer_cutoff=smooth_layer_cutoff,
             skip_module_names=skip_module_names,
             target_pattern=target_pattern,
             skip_pattern=skip_pattern,
@@ -282,6 +267,42 @@ def _replace_children_smoothquant(
         skipped += child_skipped
 
     return replaced, skipped
+
+
+def _uses_smoothquant_for_layer(
+    module_name: str,
+    smooth_layer_min: int | None,
+    smooth_layer_cutoff: int | None,
+) -> bool:
+    if smooth_layer_min is None and smooth_layer_cutoff is None:
+        return True
+    if smooth_layer_min is not None and smooth_layer_min < 0:
+        raise ValueError(f"smooth_layer_min must be non-negative, got {smooth_layer_min}")
+    if smooth_layer_cutoff is not None and smooth_layer_cutoff < 0:
+        raise ValueError(f"smooth_layer_cutoff must be non-negative, got {smooth_layer_cutoff}")
+    if (
+        smooth_layer_min is not None
+        and smooth_layer_cutoff is not None
+        and smooth_layer_min > smooth_layer_cutoff
+    ):
+        raise ValueError(
+            f"smooth_layer_min must be <= smooth_layer_cutoff, got {smooth_layer_min} > {smooth_layer_cutoff}"
+        )
+    layer_idx = _extract_layer_index(module_name)
+    if layer_idx is None:
+        return True
+    if smooth_layer_min is not None and layer_idx < smooth_layer_min:
+        return False
+    if smooth_layer_cutoff is not None and layer_idx >= smooth_layer_cutoff:
+        return False
+    return True
+
+
+def _extract_layer_index(module_name: str) -> int | None:
+    match = re.search(r"(?:^|\.)layers\.(\d+)(?:\.|$)", module_name)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 def _install_shared_input_qdq(model: nn.Module) -> Tuple[int, int]:

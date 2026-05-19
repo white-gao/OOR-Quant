@@ -20,7 +20,7 @@ from safetensors import safe_open
 
 
 DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B"
-DEFAULT_OUTPUT_DIR = "fake_quant/weight_probe/results/v1.0/OneRec-1.7B"
+DEFAULT_OUTPUT_DIR = "fake_quant/probes/weight_probe/results/v1.0/OneRec-1.7B"
 @dataclass
 class TensorStats:
     name: str

@@ -22,6 +22,27 @@ SmoothQuant-style FP8 fake quant:
 bash fake_quant/smoothquant/run_smoothquant_ad.sh
 ```
 
+Generation and activation calibration support batching. The shell runners default to
+`BATCH_SIZE=1` and `CALIB_BATCH_SIZE=1` for conservative memory use; increase them
+when GPU memory allows. Effective generation memory scales with
+`BATCH_SIZE * NUM_BEAMS`.
+
+```bash
+BATCH_SIZE=4 CALIB_BATCH_SIZE=8 bash fake_quant/run_hf_ad_full_quant.sh
+```
+
+SmoothQuant only on lower layers, with higher layers falling back to plain FP8 fake quant:
+
+```bash
+SMOOTH_LAYER_CUTOFF=20 bash fake_quant/smoothquant/run_smoothquant_ad.sh
+```
+
+SmoothQuant only on higher layers, with lower layers falling back to plain FP8 fake quant:
+
+```bash
+SMOOTH_LAYER_MIN=20 bash fake_quant/smoothquant/run_smoothquant_ad.sh
+```
+
 Smoke test with 2 samples and small beam:
 
 ```bash
@@ -30,6 +51,7 @@ python fake_quant/run_ad_sid.py \
   --output_dir fake_quant/results/v1.0/results_OneRec-1.7B-hf-fake-fp8-smoke \
   --model_name OneRec-1.7B-hf-fake-fp8-smoke \
   --sample_size 2 \
+  --batch_size 2 \
   --num_beams 2 \
   --num_return_sequences 2 \
   --overwrite \
@@ -55,10 +77,12 @@ Weight + static activation FP8 fake quant:
 ```bash
 python fake_quant/smoothquant/collect_smooth_scales.py \
   --sample_size 128 \
+  --batch_size 8 \
   --sample_offset 1000 \
   --output_path fake_quant/static_activation/scales/onerec_ad_static_tensor_absmax_sample128_offset1000.pt
 
 python fake_quant/run_ad_sid.py \
+  --batch_size 4 \
   --quant_scheme fp8_weight_channel \
   --act_quant static_tensor \
   --act_quant_mode shared_input \
@@ -78,7 +102,9 @@ SmoothQuant-style FP8 fake quant:
 --smooth_scales_path fake_quant/smoothquant/scales/onerec_ad_smoothquant_absmax_sample128_offset1000.pt \
 --smooth_alpha 0.5 \
 --act_quant per_token \
---act_quant_mode shared_input
+--act_quant_mode shared_input \
+--smooth_layer_min 20 \
+--smooth_layer_cutoff 20
 ```
 
 Optional layer selection/restoration:
@@ -98,8 +124,9 @@ fake_quant/
   run_hf_ad_full_quant.sh            # baseline / weight-only / weight+act runs
   smoothquant/                       # SmoothQuant calibration and runner
   ranking_margin/                    # ranking-margin SmoothQuant variant
-  activation_probe/                  # activation outlier probing tools
-  weight_probe/                      # weight distribution probing tools
+  probes/                            # activation / weight probing tools
+    activation_probe/
+    weight_probe/
   tests/                             # unit tests for fake-quant utilities
   results/                           # local fake-quant benchmark outputs
 ```

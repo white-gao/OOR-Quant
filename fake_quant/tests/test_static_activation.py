@@ -5,6 +5,7 @@ import torch.nn as nn
 
 from fake_quant.apply import _shared_prepare_input, apply_fp8_fake_quant
 from fake_quant.modules import FakeQuantLinear
+from fake_quant.smoothquant.collect_smooth_scales import collect_activation_absmax
 from fake_quant.smoothquant.core import save_activation_absmax
 from fake_quant.static_activation import (
     compute_static_tensor_activation_scales_for_model,
@@ -81,3 +82,75 @@ def test_shared_input_static_activation_keeps_scales_on_wrapped_linears(tmp_path
     assert isinstance(model[0], FakeQuantLinear)
     assert model[0].act_quant == "none"
     torch.testing.assert_close(model[0].activation_static_scale.cpu(), torch.tensor(8.0 / FP8_MAX))
+
+
+class _ToyTokenizer:
+    pad_token_id = 0
+    eos_token_id = 99
+
+    def __init__(self) -> None:
+        self.padding_side = "right"
+
+    def __call__(self, prompts, *, return_tensors: str, padding: bool = False):
+        encoded = {
+            "short": [1],
+            "long": [2, 3],
+        }
+        if isinstance(prompts, str):
+            prompts = [prompts]
+        ids = [encoded[prompt] for prompt in prompts]
+        width = max(len(item) for item in ids)
+        padded = []
+        masks = []
+        for item in ids:
+            pad_len = width - len(item)
+            if self.padding_side == "left":
+                padded.append([self.pad_token_id] * pad_len + item)
+                masks.append([0] * pad_len + [1] * len(item))
+            else:
+                padded.append(item + [self.pad_token_id] * pad_len)
+                masks.append([1] * len(item) + [0] * pad_len)
+        return {
+            "input_ids": torch.tensor(padded),
+            "attention_mask": torch.tensor(masks),
+        }
+
+
+class _ToyCalibModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.embed = nn.Embedding(10, 2)
+        self.proj = nn.Linear(2, 1, bias=False)
+        with torch.no_grad():
+            self.embed.weight.zero_()
+            self.embed.weight[0] = torch.tensor([100.0, 100.0])
+            self.embed.weight[1] = torch.tensor([1.0, 2.0])
+            self.embed.weight[2] = torch.tensor([3.0, 4.0])
+            self.embed.weight[3] = torch.tensor([5.0, 6.0])
+
+    def forward(self, input_ids, attention_mask=None, use_cache: bool = False):
+        return self.proj(self.embed(input_ids))
+
+
+def test_collect_activation_absmax_batches_prompts_without_counting_padding() -> None:
+    model = _ToyCalibModel()
+    tokenizer = _ToyTokenizer()
+    data = {
+        "a": {"prompt": "short"},
+        "b": {"prompt": "long"},
+    }
+
+    stats = collect_activation_absmax(
+        model,
+        tokenizer,
+        data,
+        input_device=torch.device("cpu"),
+        prompt_token="",
+        collect_lm_head=False,
+        target_regex=r"^proj$",
+        skip_regex=None,
+        batch_size=2,
+    )
+
+    torch.testing.assert_close(stats["proj"], torch.tensor([5.0, 6.0]))
+    assert tokenizer.padding_side == "right"

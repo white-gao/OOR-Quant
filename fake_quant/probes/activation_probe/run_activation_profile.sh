@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Profile OneRec-1.7B AD activation distributions with HF inference.
 # Run from repository root:
-#   bash fake_quant/activation_probe/run_activation_profile.sh
+#   bash fake_quant/probes/activation_probe/run_activation_profile.sh
 
 MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B}"
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
@@ -15,7 +15,7 @@ DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
 MAX_TOKENS="${MAX_TOKENS:-0}"
 OUTLIER_THRESHOLDS="${OUTLIER_THRESHOLDS:-6,10,20}"
-OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/activation_probe/activation_profiles/${VERSION}/OneRec-1.7B-ad-sample-${SAMPLE_SIZE}}"
+OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/probes/activation_probe/activation_profiles/${VERSION}/OneRec-1.7B-ad-sample-${SAMPLE_SIZE}}"
 SAVE_HISTOGRAMS="${SAVE_HISTOGRAMS:-true}"
 HIST_MODULES="${HIST_MODULES:-residual_block_output,mlp.down_proj,self_attn.q_proj,self_attn.k_proj,self_attn.v_proj}"
 HIST_STAGES="${HIST_STAGES:-prefill,decode_step_1,decode_step_2,decode_step_3}"
@@ -50,7 +50,7 @@ if [[ "$SAVE_HISTOGRAMS" == "true" ]]; then
   )
 fi
 
-python fake_quant/activation_probe/profile_ad_activations.py \
+python fake_quant/probes/activation_probe/profile_ad_activations.py \
   --model_path "$MODEL_PATH" \
   --data_dir "$DATA_DIR" \
   --output_dir "$OUTPUT_DIR" \

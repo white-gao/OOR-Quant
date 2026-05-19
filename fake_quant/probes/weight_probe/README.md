@@ -5,13 +5,13 @@ Utilities for inspecting OneRec-1.7B weight distributions.
 Run from the repository root:
 
 ```bash
-bash fake_quant/weight_probe/run_weight_distribution.sh
+bash fake_quant/probes/weight_probe/run_weight_distribution.sh
 ```
 
 Default outputs:
 
 ```text
-fake_quant/weight_probe/results/v1.0/OneRec-1.7B/
+fake_quant/probes/weight_probe/results/v1.0/OneRec-1.7B/
   stats/weight_stats.csv
   stats/weight_stats.json
   plots/layer_00/self_attn_q_proj_weight.png

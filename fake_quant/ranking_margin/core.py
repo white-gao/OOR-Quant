@@ -100,6 +100,8 @@ def compute_ranking_margin_smooth_scales_for_model(
     skip_module_names: Iterable[str] = ("lm_head",),
     target_regex: str | None = None,
     skip_regex: str | None = None,
+    ranking_layer_min: int | None = None,
+    ranking_layer_cutoff: int | None = None,
 ) -> Dict[str, torch.Tensor]:
     """Compute group-wise ranking-margin SmoothQuant scales for Linear modules."""
     skip_names = set(skip_module_names)
@@ -127,16 +129,19 @@ def compute_ranking_margin_smooth_scales_for_model(
             continue
         x_absmax = _max_tensors(_require_activation_stats(activation_absmax, available))
         w_absmax = _max_tensors([_weight_input_absmax(linears[name]) for name in available])
-        importance = _max_tensors(_require_importance_stats(rank_importance, available))
-        scale = compute_ranking_margin_smooth_scale(
-            x_absmax,
-            w_absmax,
-            importance,
-            alpha=alpha,
-            beta=beta,
-            clip_min=clip_min,
-            clip_max=clip_max,
-        )
+        if _uses_ranking_margin_scale(available, ranking_layer_min, ranking_layer_cutoff):
+            importance = _max_tensors(_require_importance_stats(rank_importance, available))
+            scale = compute_ranking_margin_smooth_scale(
+                x_absmax,
+                w_absmax,
+                importance,
+                alpha=alpha,
+                beta=beta,
+                clip_min=clip_min,
+                clip_max=clip_max,
+            )
+        else:
+            scale = compute_smooth_scale(x_absmax, w_absmax, alpha=alpha)
         for name in available:
             scales[name] = scale
             used.add(name)
@@ -145,19 +150,61 @@ def compute_ranking_margin_smooth_scales_for_model(
         if name in used:
             continue
         x_absmax = _require_activation_stats(activation_absmax, [name])[0]
-        importance = _require_importance_stats(rank_importance, [name])[0]
         w_absmax = _weight_input_absmax(linear)
-        scales[name] = compute_ranking_margin_smooth_scale(
-            x_absmax,
-            w_absmax,
-            importance,
-            alpha=alpha,
-            beta=beta,
-            clip_min=clip_min,
-            clip_max=clip_max,
-        )
+        if _uses_ranking_margin_scale([name], ranking_layer_min, ranking_layer_cutoff):
+            importance = _require_importance_stats(rank_importance, [name])[0]
+            scales[name] = compute_ranking_margin_smooth_scale(
+                x_absmax,
+                w_absmax,
+                importance,
+                alpha=alpha,
+                beta=beta,
+                clip_min=clip_min,
+                clip_max=clip_max,
+            )
+        else:
+            scales[name] = compute_smooth_scale(x_absmax, w_absmax, alpha=alpha)
 
     return scales
+
+
+def _uses_ranking_margin_scale(
+    names: Iterable[str],
+    ranking_layer_min: int | None,
+    ranking_layer_cutoff: int | None,
+) -> bool:
+    if ranking_layer_min is None and ranking_layer_cutoff is None:
+        return True
+    if ranking_layer_min is not None and ranking_layer_min < 0:
+        raise ValueError(f"ranking_layer_min must be non-negative, got {ranking_layer_min}")
+    if ranking_layer_cutoff is not None and ranking_layer_cutoff < 0:
+        raise ValueError(f"ranking_layer_cutoff must be non-negative, got {ranking_layer_cutoff}")
+    if (
+        ranking_layer_min is not None
+        and ranking_layer_cutoff is not None
+        and ranking_layer_min > ranking_layer_cutoff
+    ):
+        raise ValueError(
+            "ranking_layer_min must be <= ranking_layer_cutoff, "
+            f"got {ranking_layer_min} > {ranking_layer_cutoff}"
+        )
+    layer_indices = [_extract_layer_index(name) for name in names]
+    known_indices = [idx for idx in layer_indices if idx is not None]
+    if not known_indices:
+        return True
+    layer_idx = max(known_indices)
+    if ranking_layer_min is not None and layer_idx < ranking_layer_min:
+        return False
+    if ranking_layer_cutoff is not None and layer_idx >= ranking_layer_cutoff:
+        return False
+    return True
+
+
+def _extract_layer_index(name: str) -> int | None:
+    match = re.search(r"(?:^|\.)layers\.(\d+)(?:\.|$)", name)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 def _require_importance_stats(

@@ -17,7 +17,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK_ROOT = PROJECT_ROOT / "benchmarks"
 for path in (PROJECT_ROOT, BENCHMARK_ROOT):
     if str(path) not in sys.path:
@@ -28,7 +28,7 @@ from benchmark.tasks.v1_0.registry import get_loader, get_task_config
 
 DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data"
-DEFAULT_OUTPUT_DIR = "fake_quant/activation_probe/activation_profiles/v1.0/OneRec-1.7B-ad-sample-32"
+DEFAULT_OUTPUT_DIR = "fake_quant/probes/activation_probe/activation_profiles/v1.0/OneRec-1.7B-ad-sample-32"
 FALLBACK_MODEL_PATHS = [
     "/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B",
     "/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B",

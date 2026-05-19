@@ -9,6 +9,7 @@
 - benchmark选用OpenRecRec开源的benchmark，有多个task，针对当前的业务场景，主要关注item prediction，也就是集中在ad，video，product三个task
 - 目前量化的实现方法为“伪量化/fake quant.”，本质上是在推理forward过程中劫持模型layer并进行替换，劫持操作可以将模型参数量化为低精度版本（weight quant），同时也可以将layer输入x量化为低精度版本（activation quant）
 - 目前的量化目标当前模型离线存储数值类型为bf16，目标量化到fp8（暂定为E4M3格式），相关资料表明，Qwen3 bf16->fp8的量化推理速度能提升一倍左右，显存可减少70%左右
+- 经过领域的不断探索，目前比较有效的量化流程有两个阶段，第一个阶段是参数平滑，算法会在通道维度上计算一个平滑系数，用于平滑异常的参数通道，这个操作是计算等价的，不会造成量化损失，而是为了降低量化的难度；第二个阶段是量化方法，这部分真正进行了数据类型的转换，该阶段设计量化粒度，缩放因子的计算，校准策略，这里是真正产生量化损失的环节
 
 ## 量化策略
 所有的量化层劫持实现都在quant.py中，目前实现的量化层/平滑算法包括以下内容：
@@ -16,8 +17,15 @@
     per-channel版本的模型权重量化，在模型读取截断一次性替换模型参数数值
 2. fp8_activation_per_token()：
     per-token版本的激活值动态量化，也就是根据输入的激活值，当场计算scale进行量化
-3. Smoothquant：
+3. fp8_activation_static_tensor():
+    per-tensor版本激活值静态量化，静态版本无法实现动态情况下per-token scale的计算
+
+## 平滑策略
+1. Smoothquant：
     在模型量化前先利用calibration set为每个channel提前计算平滑scale，再在平滑后的weight和activation上进行量化
+2. ranking_margin + smoothquant:
+    通过对排序loss求一阶导得到和推荐结果相关的每个channel的重要性分数，分数越大说明这个channel的扰动更容易改变排序边界，应当在smoothing的时候更偏向保护activation，也就是要放大对应channel的scale
+    最终是全面掉点，同时还尝试了在浅层和深层使用这个增强平滑的方法，发现在浅层掉点更明显，深层和smoothquant接近。这说明smoothquant本身对浅层的scale计算是比较准确的，再加上ranking就纯负面，而深层smoothquant的scale本身就没那么准，所以再加扰动也不会掉很多点
 
 v1的实现是纯数值模拟，虽然有用上`torch.float8_e4m3fn`，但本质上只是当成个“筛子”，来做数值上的转换，模型的所有计算都是在bf16来做的
 v2的实现真正使用了fp8 tensor（既然5090和H100支持，那为什么不用呢？），具体而言就是量化tensor的类型就保持`torch.float8_e4m3fn`，在部分运算上，使用`torch._scaled_mm`来进行fp8 tensor之间的矩阵计算
@@ -25,7 +33,7 @@ v2的实现真正使用了fp8 tensor（既然5090和H100支持，那为什么不
 ### weight quant
 weight是经过漫长的模型训练的，因为细粒度的梯度下降和正则化，weight整体的分布会一直被往0附近压，所以权重的数值分布一般来说是非常紧凑，平滑，整体呈现正态分布。由于权重天生的偏正态分布，所以一般来说可以直接使用min-max方法来量化，不会有太明显的异常值来拉伸量化区间。
 
-目前已经对模型权重分布进行统计，结果在./weight_probe中，所有线性层（attn qkvo，mlp gate/up/down）权重分布均类似正态分布，数值聚集在±0.1之间。各个layernorm参数分布有所不同，普遍单峰会出现大值，但是一般情况下不对其进行量化。
+目前已经对模型权重分布进行统计，结果在 `fake_quant/probes/weight_probe` 中，所有线性层（attn qkvo，mlp gate/up/down）权重分布均类似正态分布，数值聚集在±0.1之间。各个layernorm参数分布有所不同，普遍单峰会出现大值，但是一般情况下不对其进行量化。
 
 ### activation quant
 激活值会受到不同输入数据，条件注入等因素影响，通常来说会存在相比于平均值大数倍甚至数十倍的异常值，而且常常会呈现channel-wise或者token-wise的整体异常情况。
@@ -34,8 +42,9 @@ weight是经过漫长的模型训练的，因为细粒度的梯度下降和正�
 对于activation的量化来说，由于LLM场景下输入的不确定性，如果要保精度的话，一般是采用在线动态量化策略，如果你的分布可以比较好地预测，也可以使用离线计算scale，然后线上直接量化的策略。而量化的方法有些论文更倾向于采用percentile方法来适配activation存在大异常值的场景，来保大多数数值量化精度损失
 
 目前已经对激活值进行初步的探测，激活值探测开销比较大，所以还没有形成统一的结论。
-- 32个sample来统计不同token的激活值分布，结果在fake_quant/activation_probe/activation_profiles/v1.0/OneRec-1.7B-ad-sample-32/plots，不同token的分布基本都保持一直，随着层数逐渐升高，分布曲线逐渐往高值扩张，同时chat_special token出现异常高单值
-- 对单个样本来细致查看各层激活值，发现在channel维度上更容易出现普遍异常值现象，token维度上比较难观察到，结果在fake_quant/activation_probe/activation_profiles/v1.0/token_channel_sample_0；对每层异常值channel进行统计，查看异常通道是否存在重叠现象，对该样本的统计发现对于attn和ffn前的异常值channel一般都重叠，而内部attn/ffn内部的线性层（attn o_proj/mlp down_proj）就不太重叠。但是这块还需要再进行拓展实验，一个是样本数量，不同domain样本；另外一个是token数量，目前只看了最后的100多个token，还没看到开头的sink token
+- 32个sample来统计不同token的激活值分布，结果在 `fake_quant/probes/activation_probe/activation_profiles/v1.0/OneRec-1.7B-ad-sample-32/plots`，不同token的分布基本都保持一直，随着层数逐渐升高，分布曲线逐渐往高值扩张，同时chat_special token出现异常高单值
+- 对单个样本来细致查看各层激活值，发现在channel维度上更容易出现普遍异常值现象，token维度上比较难观察到，结果在 `fake_quant/probes/activation_probe/activation_profiles/v1.0/token_channel_sample_0`；对每层异常值channel进行统计，查看异常通道是否存在重叠现象，对该样本的统计发现对于attn和ffn前的异常值channel一般都重叠，而内部attn/ffn内部的线性层（attn o_proj/mlp down_proj）就不太重叠。但是这块还需要再进行拓展实验，一个是样本数量，不同domain样本；另外一个是token数量，目前只看了最后的100多个token，还没看到开头的sink token
+- 对不同输入样本激活值通道进行探测，发现样本之间存在较大比例的重叠的channel，随着模型层数的增高比例从80%逐渐降到50%，一定程度上可以作证smoothquant在高层的scale其实是一个方差比较大的平均。
 
 ## baseline
 - OneRec-V2：offline weight_linear_fp8 + activation_dynamic_fp8，MoE GEMM fp8，数值敏感或者收益低的模块保留fp16（文中没提到是哪里）
@@ -104,7 +113,7 @@ weight是经过漫长的模型训练的，因为细粒度的梯度下降和正�
 | 26 | 0.240 | 0.08579 | 0.226 | 0.08104 | +0.00215 |
 | 27 | 0.227 | 0.07883 | 0.218 | 0.07484 | -0.00405 |
 
-当前最明显有正收益的是 layer 26，`pid_recall@32` 从 all_quant 的 0.07889 恢复到 0.08104，约追回一半 baseline gap；layer 24/20/16/25 也有轻微正收益。多数层恢复后反而低于 all_quant，说明 full quant 的误差存在层间交互，简单恢复任意单层不一定带来收益。下一步可以优先围绕 layer 20/24/26 做 module-level sensitivity，拆分 attn 与 MLP 内部模块。
+当前最明显有正收益的是 layer 26，`pid_recall@32` 从 all_quant 的 0.07889 恢复到 0.08104，约追回一半 baseline gap；layer 24/20/16/25 也有轻微正收益。多数层恢复后反而低于 all_quant，说明 full quant 的误差存在层间交互，简单恢复任意单层不一定带来收益。下一步可以优先围绕 layer 20/24/26 做 module-level sensitivity，拆分 attn 与 MLP 内部模块。目前结论就是高层参数对精度比较敏感
 
 
 ## TODO

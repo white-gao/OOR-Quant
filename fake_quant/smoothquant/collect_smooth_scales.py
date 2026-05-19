@@ -6,7 +6,7 @@ import random
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Iterator
 
 import torch
 import torch.nn as nn
@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_path", default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--split", default="test", choices=["test"])
     parser.add_argument("--sample_size", default=128, type=int)
+    parser.add_argument("--batch_size", default=1, type=int)
     parser.add_argument(
         "--sample_offset",
         default=0,
@@ -144,6 +145,22 @@ def should_collect_module(
     return True
 
 
+def iter_sample_batches(
+    samples: list[Dict[str, Any]],
+    batch_size: int,
+) -> Iterator[list[Dict[str, Any]]]:
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}")
+    for start in range(0, len(samples), batch_size):
+        yield samples[start : start + batch_size]
+
+
+def format_prompt(prompt: str, prompt_token: str) -> str:
+    if prompt_token and not prompt.endswith(prompt_token):
+        return prompt + prompt_token
+    return prompt
+
+
 def collect_activation_absmax(
     model: nn.Module,
     tokenizer: Any,
@@ -154,21 +171,36 @@ def collect_activation_absmax(
     collect_lm_head: bool,
     target_regex: str | None,
     skip_regex: str | None,
+    batch_size: int = 1,
 ) -> Dict[str, torch.Tensor]:
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}")
+
     stats: Dict[str, torch.Tensor] = {}
     handles = []
     target_pattern = re.compile(target_regex) if target_regex else None
     skip_pattern = re.compile(skip_regex) if skip_regex else None
+    current_attention_mask: torch.Tensor | None = None
 
     def make_hook(name: str):
         def hook(_module: nn.Module, inputs: tuple[Any, ...]) -> None:
+            nonlocal current_attention_mask
             if not inputs:
                 return
             x = inputs[0]
             if not torch.is_tensor(x):
                 return
-            reduce_dims = tuple(range(x.ndim - 1))
-            x_absmax = x.detach().float().abs().amax(dim=reduce_dims).cpu()
+            x_for_stats = x.detach()
+            if (
+                current_attention_mask is not None
+                and x_for_stats.ndim >= 3
+                and tuple(x_for_stats.shape[:2]) == tuple(current_attention_mask.shape)
+            ):
+                mask = current_attention_mask.to(device=x_for_stats.device, dtype=torch.bool)
+                view_shape = (*mask.shape, *((1,) * (x_for_stats.ndim - 2)))
+                x_for_stats = x_for_stats.masked_fill(~mask.view(view_shape), 0)
+            reduce_dims = tuple(range(x_for_stats.ndim - 1))
+            x_absmax = x_for_stats.float().abs().amax(dim=reduce_dims).cpu()
             if name in stats:
                 stats[name] = torch.maximum(stats[name], x_absmax)
             else:
@@ -187,16 +219,31 @@ def collect_activation_absmax(
         ):
             handles.append(module.register_forward_pre_hook(make_hook(name)))
 
+    old_padding_side = getattr(tokenizer, "padding_side", None)
+    if old_padding_side is not None:
+        tokenizer.padding_side = "left"
+
     try:
         with torch.inference_mode():
-            for sample in tqdm(test_data.values(), desc="Collect SmoothQuant activation absmax"):
-                prompt = sample["prompt"]
-                if prompt_token and not prompt.endswith(prompt_token):
-                    prompt = prompt + prompt_token
-                inputs = tokenizer(prompt, return_tensors="pt")
-                inputs = {key: value.to(input_device) for key, value in inputs.items()}
+            samples = list(test_data.values())
+            num_batches = (len(samples) + batch_size - 1) // batch_size
+            for batch in tqdm(
+                iter_sample_batches(samples, batch_size),
+                desc="Collect SmoothQuant activation absmax",
+                total=num_batches,
+            ):
+                prompts = [format_prompt(sample["prompt"], prompt_token) for sample in batch]
+                inputs = tokenizer(prompts, return_tensors="pt", padding=True)
+                inputs = {
+                    key: value.to(input_device) if torch.is_tensor(value) else value
+                    for key, value in inputs.items()
+                }
+                current_attention_mask = inputs.get("attention_mask")
                 model(**inputs, use_cache=False)
+                current_attention_mask = None
     finally:
+        if old_padding_side is not None:
+            tokenizer.padding_side = old_padding_side
         for handle in handles:
             handle.remove()
 
@@ -243,6 +290,7 @@ def main() -> None:
         collect_lm_head=args.collect_lm_head,
         target_regex=args.target_regex,
         skip_regex=args.skip_regex,
+        batch_size=args.batch_size,
     )
 
     save_activation_absmax(
@@ -253,6 +301,7 @@ def main() -> None:
             "data_dir": args.data_dir,
             "split": args.split,
             "sample_size": args.sample_size,
+            "batch_size": args.batch_size,
             "sample_offset": args.sample_offset,
             "sample_range": [args.sample_offset, args.sample_offset + args.sample_size],
             "dtype": args.dtype,

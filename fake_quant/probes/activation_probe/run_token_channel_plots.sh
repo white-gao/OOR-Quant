@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Plot token-channel activation maps for selected OneRec layers/nodes.
 # Run from repository root:
-#   bash fake_quant/activation_probe/run_token_channel_plots.sh
+#   bash fake_quant/probes/activation_probe/run_token_channel_plots.sh
 
 MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B}"
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
@@ -18,7 +18,7 @@ SURFACE_MAX_CHANNELS="${SURFACE_MAX_CHANNELS:-512}"
 DTYPE="${DTYPE:-bfloat16}"
 DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
-OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/activation_probe/activation_profiles/${VERSION}/token_channel_sample_${SAMPLE_INDEX}}"
+OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/probes/activation_probe/activation_profiles/${VERSION}/token_channel_sample_${SAMPLE_INDEX}}"
 
 if [[ ! -e "$MODEL_PATH" && -e "/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B" ]]; then
   MODEL_PATH="/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B"
@@ -35,7 +35,7 @@ echo "LAYERS=${LAYERS}"
 echo "NODES=${NODES}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
 
-python fake_quant/activation_probe/plot_token_channel_activations.py \
+python fake_quant/probes/activation_probe/plot_token_channel_activations.py \
   --model_path "$MODEL_PATH" \
   --data_dir "$DATA_DIR" \
   --output_dir "$OUTPUT_DIR" \

@@ -75,6 +75,18 @@ ckpt/
 # Ray
 ray_results/
 
-# Data
+# Generated benchmark/data outputs
 data/
 output/
+
+# Fake quant generated outputs
+fake_quant/probes/activation_probe/activation_profiles/
+fake_quant/results/
+fake_quant/smoothquant/scales/
+fake_quant/ranking_margin/importances/
+fake_quant/ranking_margin/channel_stability/
+fake_quant/static_activation/scales/
+fake_quant/probes/weight_probe/results/
+
+# papers
+PTQ_papers/

@@ -8,7 +8,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterator, List, Tuple
 
 import torch
 from tqdm import tqdm
@@ -83,27 +83,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smooth_alpha", type=float, default=0.5, help="SmoothQuant alpha in [0, 1].")
     parser.add_argument(
-        "--smooth_rank_importance_path",
+        "--smooth_layer_cutoff",
+        type=int,
         default=None,
-        help="Optional ranking-margin importance file produced by ranking_margin/collect_importance.py.",
+        help=(
+            "Apply SmoothQuant smoothing only to layers with layer_idx < cutoff. "
+            "Higher layers still use plain FP8 fake quant without smoothing."
+        ),
     )
     parser.add_argument(
-        "--smooth_importance_beta",
-        type=float,
-        default=0.25,
-        help="Exponent for ranking-margin importance correction. 0 recovers plain SmoothQuant.",
-    )
-    parser.add_argument(
-        "--smooth_importance_clip_min",
-        type=float,
-        default=0.25,
-        help="Lower clip for geometric-mean-normalized ranking importance.",
-    )
-    parser.add_argument(
-        "--smooth_importance_clip_max",
-        type=float,
-        default=4.0,
-        help="Upper clip for geometric-mean-normalized ranking importance.",
+        "--smooth_layer_min",
+        type=int,
+        default=None,
+        help=(
+            "Apply SmoothQuant smoothing only to layers with layer_idx >= min. "
+            "Lower layers still use plain FP8 fake quant without smoothing."
+        ),
     )
     parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--num_beams", type=int, default=32)
@@ -182,6 +177,73 @@ def decode_generations(
     return generations
 
 
+def iter_batches(
+    items: List[Tuple[str, Dict[str, Any]]],
+    batch_size: int,
+) -> Iterator[List[Tuple[str, Dict[str, Any]]]]:
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}")
+    for start in range(0, len(items), batch_size):
+        yield items[start : start + batch_size]
+
+
+def format_prompt(prompt: str, prompt_token: str) -> str:
+    if prompt_token and not prompt.endswith(prompt_token):
+        return prompt + prompt_token
+    return prompt
+
+
+def generate_batch(
+    model: torch.nn.Module,
+    tokenizer: Any,
+    prompts: List[str],
+    input_device: torch.device,
+    args: argparse.Namespace,
+) -> List[List[str]]:
+    if not prompts:
+        return []
+
+    old_padding_side = getattr(tokenizer, "padding_side", None)
+    if old_padding_side is not None:
+        tokenizer.padding_side = "left"
+
+    try:
+        inputs = tokenizer(prompts, return_tensors="pt", padding=True)
+        inputs = {
+            key: value.to(input_device) if torch.is_tensor(value) else value
+            for key, value in inputs.items()
+        }
+        prompt_len = int(inputs["input_ids"].shape[-1])
+
+        with torch.inference_mode():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=args.max_new_tokens,
+                num_beams=args.num_beams,
+                num_return_sequences=args.num_return_sequences,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+    finally:
+        if old_padding_side is not None:
+            tokenizer.padding_side = old_padding_side
+
+    output = output.detach().cpu()
+    if output.shape[0] % len(prompts) != 0:
+        raise RuntimeError(
+            "Unexpected generate output shape: "
+            f"{tuple(output.shape)} for batch size {len(prompts)}"
+        )
+    returns_per_prompt = output.shape[0] // len(prompts)
+    generations = []
+    for batch_idx in range(len(prompts)):
+        start = batch_idx * returns_per_prompt
+        end = start + returns_per_prompt
+        generations.append(decode_generations(tokenizer, output[start:end], prompt_len))
+    return generations
+
+
 def generate_one(
     model: torch.nn.Module,
     tokenizer: Any,
@@ -189,22 +251,7 @@ def generate_one(
     input_device: torch.device,
     args: argparse.Namespace,
 ) -> List[str]:
-    inputs = tokenizer(prompt, return_tensors="pt")
-    inputs = {key: value.to(input_device) for key, value in inputs.items()}
-    prompt_len = int(inputs["input_ids"].shape[-1])
-
-    with torch.inference_mode():
-        output = model.generate(
-            **inputs,
-            max_new_tokens=args.max_new_tokens,
-            num_beams=args.num_beams,
-            num_return_sequences=args.num_return_sequences,
-            do_sample=False,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
-
-    return decode_generations(tokenizer, output.detach().cpu(), prompt_len)
+    return generate_batch(model, tokenizer, [prompt], input_device, args)[0]
 
 
 def result_path(output_dir: str, model_name: str, split: str) -> Path:
@@ -248,15 +295,14 @@ def save_results(
             "smooth_scales_path": args.smooth_scales_path,
             "static_act_scales_path": args.static_act_scales_path,
             "smooth_alpha": args.smooth_alpha,
-            "smooth_rank_importance_path": args.smooth_rank_importance_path,
-            "smooth_importance_beta": args.smooth_importance_beta,
-            "smooth_importance_clip_min": args.smooth_importance_clip_min,
-            "smooth_importance_clip_max": args.smooth_importance_clip_max,
+            "smooth_layer_cutoff": args.smooth_layer_cutoff,
+            "smooth_layer_min": args.smooth_layer_min,
             "quantize_lm_head": args.quantize_lm_head,
             "dtype": args.dtype,
             "num_beams": args.num_beams,
             "num_return_sequences": args.num_return_sequences,
             "max_new_tokens": args.max_new_tokens,
+            "batch_size": args.batch_size,
             "seed": args.seed,
         },
         "samples": samples,
@@ -278,8 +324,8 @@ def maybe_evaluate(output_dir: str, data_dir: str, overwrite: bool) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.batch_size != 1:
-        raise ValueError("The first-pass HF fake-quant runner currently supports --batch_size 1 only.")
+    if args.batch_size <= 0:
+        raise ValueError(f"--batch_size must be positive, got {args.batch_size}")
 
     set_seed(args.seed)
 
@@ -331,10 +377,8 @@ def main() -> None:
             model,
             activation_absmax_path=args.smooth_scales_path,
             alpha=args.smooth_alpha,
-            rank_importance_path=args.smooth_rank_importance_path,
-            importance_beta=args.smooth_importance_beta,
-            importance_clip_min=args.smooth_importance_clip_min,
-            importance_clip_max=args.smooth_importance_clip_max,
+            smooth_layer_min=args.smooth_layer_min,
+            smooth_layer_cutoff=args.smooth_layer_cutoff,
             act_quant=args.act_quant,
             act_quant_mode=args.act_quant_mode,
             skip_module_names=skip_names,
@@ -346,8 +390,8 @@ def main() -> None:
             f"skipped_linears={summary.skipped_linears}, act_quant={args.act_quant}, "
             f"act_quant_mode={args.act_quant_mode}, smooth_alpha={args.smooth_alpha}, "
             f"smooth_scales_path={args.smooth_scales_path}, "
-            f"smooth_rank_importance_path={args.smooth_rank_importance_path}, "
-            f"smooth_importance_beta={args.smooth_importance_beta}, "
+            f"smooth_layer_min={args.smooth_layer_min}, "
+            f"smooth_layer_cutoff={args.smooth_layer_cutoff}, "
             f"shared_attention_modules={summary.shared_attention_modules}, "
             f"shared_mlp_modules={summary.shared_mlp_modules}"
         )
@@ -362,17 +406,24 @@ def main() -> None:
 
     generations: Dict[str, List[str]] = {}
     start = time.time()
-    for sample_id, sample in tqdm(test_data.items(), desc="HF fake-quant AD generation"):
-        prompt = sample["prompt"]
-        if prompt_token and not prompt.endswith(prompt_token):
-            prompt = prompt + prompt_token
-        generations[sample_id] = generate_one(
+    test_items = list(test_data.items())
+    num_batches = (len(test_items) + args.batch_size - 1) // args.batch_size
+    for batch in tqdm(
+        iter_batches(test_items, args.batch_size),
+        desc="HF fake-quant AD generation",
+        total=num_batches,
+    ):
+        sample_ids = [sample_id for sample_id, _sample in batch]
+        prompts = [format_prompt(sample["prompt"], prompt_token) for _sample_id, sample in batch]
+        batch_generations = generate_batch(
             model=model,
             tokenizer=tokenizer,
-            prompt=prompt,
+            prompts=prompts,
             input_device=input_device,
             args=args,
         )
+        for sample_id, sample_generations in zip(sample_ids, batch_generations):
+            generations[sample_id] = sample_generations
     total_time = time.time() - start
 
     save_results(

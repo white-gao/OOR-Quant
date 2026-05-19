@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Analyze whether activation outlier channels are fixed across layers.
+# Profile fixed-position OneRec AD activations with teacher-forced SID decoding.
 # Run from repository root:
-#   bash fake_quant/activation_probe/run_channel_overlap.sh
+#   bash fake_quant/probes/activation_probe/run_teacher_forced_decode_profile.sh
 
-MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B}"
+MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B}"
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
 VERSION="${VERSION:-v1.0}"
-SAMPLE_INDEX="${SAMPLE_INDEX:-0}"
-LAYERS="${LAYERS:-all}"
-NODES="${NODES:-attn_qkv_input,attn_o_input,ffn_gate_up_input,ffn_down_input}"
-MAX_TOKENS="${MAX_TOKENS:-256}"
-TOPK="${TOPK:-32}"
+SAMPLE_SIZE="${SAMPLE_SIZE:-128}"
 DTYPE="${DTYPE:-bfloat16}"
 DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
-OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/activation_probe/activation_profiles/${VERSION}/channel_overlap_sample_${SAMPLE_INDEX}}"
+MAX_TOKENS="${MAX_TOKENS:-0}"
+OUTLIER_THRESHOLDS="${OUTLIER_THRESHOLDS:-6,10,20}"
+OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/probes/activation_probe/activation_profiles/${VERSION}/OneRec-1.7B-ad-teacher-forced-sample-${SAMPLE_SIZE}}"
 
 if [[ ! -e "$MODEL_PATH" && -e "/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B" ]]; then
   MODEL_PATH="/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B"
@@ -28,21 +26,16 @@ fi
 
 echo "MODEL_PATH=${MODEL_PATH}"
 echo "DATA_DIR=${DATA_DIR}"
-echo "SAMPLE_INDEX=${SAMPLE_INDEX}"
-echo "LAYERS=${LAYERS}"
-echo "NODES=${NODES}"
-echo "TOPK=${TOPK}"
+echo "SAMPLE_SIZE=${SAMPLE_SIZE}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
 
-python fake_quant/activation_probe/analyze_channel_overlap.py \
+python fake_quant/probes/activation_probe/profile_teacher_forced_decode_steps.py \
   --model_path "$MODEL_PATH" \
   --data_dir "$DATA_DIR" \
   --output_dir "$OUTPUT_DIR" \
-  --sample_index "$SAMPLE_INDEX" \
-  --layers "$LAYERS" \
-  --nodes "$NODES" \
-  --max_tokens "$MAX_TOKENS" \
-  --topk "$TOPK" \
+  --sample_size "$SAMPLE_SIZE" \
   --dtype "$DTYPE" \
   --device "$DEVICE" \
-  --seed "$SEED"
+  --seed "$SEED" \
+  --max_tokens "$MAX_TOKENS" \
+  --outlier_thresholds "$OUTLIER_THRESHOLDS"
