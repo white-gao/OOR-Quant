@@ -49,6 +49,91 @@ The production model weights are not updated. M1 trains
 (`q_proj/k_proj/v_proj` and `gate_proj/up_proj`) share a single LET parameter;
 other Linear modules keep independent LET parameters.
 
+## 计划中的 M3：SID 引导的加权 Block 重构
+
+M3 不改变 M2 的量化模块，仍然使用 LWT、Linear scale-only LET 和 W+A fake quant。它只改变 calibration loss：用 SID 预测的 end loss 生成固定的重要性权重，再用这个权重加权 block reconstruction MSE。
+
+M2 的普通 block 重构目标是：
+
+$$
+\mathcal{L}_{plain}^{(l)}
+= \left\|
+Y_l - \hat{Y}_l
+\right\|_F^2 .
+$$
+
+其中 $Y_l$ 是 BF16 teacher 的第 $l$ 个 block 输出，$\hat{Y}_l$ 是量化 student 的第 $l$ 个 block 输出。
+
+M3 先在 BF16 teacher 上计算 teacher-forced SID loss：
+
+$$
+\mathcal{L}_{sid}
+= \sum_{g=1}^{G}
+\operatorname{CE}
+\left(
+z_g,
+y_g
+\right) .
+$$
+
+其中 $g$ 表示 SID 生成位置，$z_g$ 是该位置的 SID logits，$y_g$ 是目标 SID token。然后反传得到第 $l$ 个 block 输出上的梯度：
+
+$$
+G_l = \frac{\partial \mathcal{L}_{sid}}{\partial Y_l} .
+$$
+
+第一版默认使用 channel-wise importance，降低小 calibration set 下的噪声：
+
+$$
+I_l = \operatorname{mean}_{B,T}
+\left(
+G_l^2
+\right) .
+$$
+
+这里 $I_l$ 只保留 hidden channel 维度，可以在 loss 中自动广播到 batch 和 token 维度。随后做均值归一化：
+
+$$
+\bar{I}_l
+= \frac{I_l}{\operatorname{mean}(I_l) + \epsilon} .
+$$
+
+随后对归一化后的 importance 做截断，避免极端梯度权重主导优化：
+
+$$
+\tilde{I}_l
+= \operatorname{clip}
+\left(
+\bar{I}_l,
+I_{min},
+I_{max}
+\right) .
+$$
+
+推荐初始截断范围：
+
+$$
+I_{min}=0.5,
+\qquad
+I_{max}=2.0 .
+$$
+
+最终 M3 的第 $l$ 个 block calibration loss 是加权 Frobenius 范数：
+
+$$
+\mathcal{L}_{M3}^{(l)}
+= \left\|
+\operatorname{stopgrad}
+\left(
+\sqrt{\tilde{I}_l}
+\right)
+\odot
+\left(Y_l - \hat{Y}_l\right)
+\right\|_F^2 .
+$$
+
+注意：Stage B 只优化 LWT 和 LET 量化参数，不优化 SID CE、Recall@K、NDCG@K、top-k overlap、原始模型权重或 importance 权重。SID loss 只在 Stage A 中用于生成固定的 reconstruction 权重。
+
 ## Files
 
 ```text
@@ -168,9 +253,23 @@ Outputs are written under:
 <output_dir>/<model_name>/ad/test_generated.json
 <output_dir>/<model_name>/ad/m1_calibration.json, for --mode m1_lwt
 <output_dir>/<model_name>/ad/m2_calibration.json, for --mode m2_lwt_let
+<output_dir>/<model_name>/ad/m1_lwt_learned_quant_params.pt, for --mode m1_lwt
+<output_dir>/<model_name>/ad/m2_lwt_let_learned_quant_params.pt, for --mode m2_lwt_let
 <output_dir>/<model_name>/ad/baseline_w8a8_config.json, for --mode baseline_w8a8
 <output_dir>/eval_results.json, when --evaluate is set
 ```
+
+
+Load saved learnable quantization parameters without recalibration:
+
+```bash
+LOAD_QUANT_PARAMS=fake_quant_learnable/results/<run>/<model_name>/ad/m2_lwt_let_learned_quant_params.pt \
+  bash fake_quant_learnable/run_learnable_quant_ad.sh
+```
+
+The loaded params file stores only learned quantization parameters, not the full
+model weights. It is intended for repeated evaluation with different beam sizes,
+eval subsets, or output directories.
 
 Notes:
 
@@ -178,4 +277,6 @@ Notes:
 - `--calib_only` writes the mode config without generation.
 - `--save_model_state` also saves the quantized model state dict, but this can be large.
 - Use the same `--act_quant` for baseline, M1, and M2 when comparing.
+- Learnable modes save lightweight LWT/LET parameters by default in `*_learned_quant_params.pt`; use `--no_save_quant_params` only for throwaway runs.
+- Reuse saved parameters with `--load_quant_params <path>`; this skips calibration and applies the saved frozen quantized wrappers before generation.
 - Use `--eval_sample_size 1000 --eval_offset 0` for ad1000 evaluation, and set `--calib_offset 1000` so calibration starts after the eval subset.

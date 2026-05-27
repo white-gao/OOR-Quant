@@ -7,7 +7,10 @@ import torch.nn as nn
 
 from fake_quant_learnable.apply import (
     apply_baseline_w8a8,
+    apply_learned_quant_params,
     apply_learnable_lwt,
+    export_learned_quant_params,
+    freeze_learnable_lwt,
     iter_learnable_lwt_modules,
     learnable_lwt_parameters,
 )
@@ -196,6 +199,30 @@ def test_let_parameters_get_gradient_and_freeze_matches_forward() -> None:
     assert isinstance(frozen, FrozenLearnedFakeQuantLinear)
     assert frozen.let_scale is not None
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_exported_learned_quant_params_recreate_frozen_block_forward() -> None:
+    torch.manual_seed(5)
+    base = TinyBlock().eval()
+    learned = copy.deepcopy(base).eval()
+    apply_learnable_lwt(learned, act_quant="per_token", enable_let=True)
+    for idx, module in enumerate(iter_learnable_lwt_modules(learned)):
+        with torch.no_grad():
+            module.log_clip_multiplier.fill_(torch.log(torch.tensor(0.6 + 0.1 * idx)))
+            assert module.log_let_scale is not None
+            module.log_let_scale.copy_(torch.linspace(-0.2, 0.2, module.in_features))
+    params = export_learned_quant_params(learned)
+
+    expected_block = copy.deepcopy(learned).eval()
+    freeze_learnable_lwt(expected_block)
+    loaded_block = copy.deepcopy(base).eval()
+    replaced = apply_learned_quant_params(loaded_block, params)
+
+    x = torch.randn(3, 4)
+    assert replaced == 2
+    assert isinstance(loaded_block.fc1, FrozenLearnedFakeQuantLinear)
+    assert isinstance(loaded_block.fc2, FrozenLearnedFakeQuantLinear)
+    torch.testing.assert_close(loaded_block(x), expected_block(x), rtol=0, atol=0)
 
 
 def test_apply_learnable_lwt_enable_let_creates_let_parameters() -> None:

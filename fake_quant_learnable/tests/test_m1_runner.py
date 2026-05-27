@@ -6,6 +6,7 @@ import torch.nn as nn
 from fake_quant_learnable.modules import BaselineFakeQuantLinear, FrozenLearnedFakeQuantLinear
 from fake_quant_learnable.run_m1_onerec_ad import (
     apply_baseline_layers,
+    apply_learned_quant_params_to_layers,
     calibrate_model_layers_m1,
     capture_layer_input_batches,
     get_transformer_layers,
@@ -33,6 +34,38 @@ class ToyModel(nn.Module):
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
         del attention_mask
         return self.model(input_ids.float())
+
+
+def test_calibrate_exports_params_that_can_be_loaded_into_fresh_model() -> None:
+    torch.manual_seed(7)
+    model = ToyModel()
+    base_state = {key: value.detach().clone() for key, value in model.state_dict().items()}
+    batches = [{"input_ids": torch.randn(3, 4), "attention_mask": torch.ones(3, 4)}]
+    learned_quant_params = {}
+
+    calibrate_model_layers_m1(
+        model=model,
+        model_batches=batches,
+        layer_indices=[1],
+        steps=2,
+        lr=0.01,
+        act_quant="per_token",
+        init_clip_multiplier=0.5,
+        enable_let=True,
+        learned_quant_params=learned_quant_params,
+    )
+
+    fresh = ToyModel()
+    fresh.load_state_dict(base_state)
+    applied = apply_learned_quant_params_to_layers(
+        fresh,
+        {"format_version": 1, "method": "m2_lwt_let", "layers": learned_quant_params},
+    )
+
+    x = torch.randn(2, 4)
+    assert applied == [1]
+    assert isinstance(fresh.model.layers[1], FrozenLearnedFakeQuantLinear)
+    torch.testing.assert_close(fresh.model.layers[1](x), model.model.layers[1](x), rtol=0, atol=0)
 
 
 def test_parse_layer_indices_supports_all_last_and_csv() -> None:

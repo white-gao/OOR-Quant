@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Iterable, Iterator
+from typing import Any, Iterable, Iterator, Mapping
 
+import torch
 import torch.nn as nn
 
 from .modules import BaselineFakeQuantLinear, FrozenLearnedFakeQuantLinear, LearnableFakeQuantLinear
@@ -106,6 +107,53 @@ def learnable_lwt_parameters(model: nn.Module) -> Iterator[nn.Parameter]:
 def set_learnable_lwt_quant_enabled(model: nn.Module, enabled: bool) -> None:
     for module in iter_learnable_lwt_modules(model):
         module.set_quant_enabled(enabled)
+
+
+def export_learned_quant_params(model: nn.Module) -> dict[str, Any]:
+    """Export lightweight learned LWT/LET parameters from learnable wrappers."""
+    modules: dict[str, dict[str, Any]] = {}
+    for name, module in model.named_modules():
+        if not isinstance(module, LearnableFakeQuantLinear):
+            continue
+        modules[name] = {
+            "act_quant": module.act_quant,
+            "enable_let": module.let_scale is not None,
+            "qmax": module.qmax,
+            "eps": module.eps,
+            "min_clip_multiplier": module.min_clip_multiplier,
+            "max_clip_multiplier": module.max_clip_multiplier,
+            "min_let_scale": module.min_let_scale,
+            "max_let_scale": module.max_let_scale,
+            "clip_multiplier": module.clip_multiplier.detach().cpu(),
+            "let_scale": None if module.let_scale is None else module.let_scale.detach().cpu(),
+        }
+    return {"format_version": 1, "modules": modules}
+
+
+def apply_learned_quant_params(model: nn.Module, params: Mapping[str, Any]) -> int:
+    """Apply exported LWT/LET params to matching Linear modules and freeze them."""
+    modules = params.get("modules", params)
+    if not isinstance(modules, Mapping):
+        raise TypeError("Expected learned quant params to contain a modules mapping.")
+
+    replaced = 0
+    for name, entry in modules.items():
+        if name == "":
+            raise ValueError("Root-module learned params must be applied by the caller.")
+        parent, child_name, child = _resolve_child_module(model, str(name))
+        setattr(parent, child_name, _build_frozen_learned_linear(child, entry))
+        replaced += 1
+    return replaced
+
+
+def learned_quantized_module_from_params(module: nn.Module, params: Mapping[str, Any]) -> tuple[nn.Module, int]:
+    """Return a module with exported learned params applied, supporting root Linear layers."""
+    modules = params.get("modules", params)
+    if not isinstance(modules, Mapping):
+        raise TypeError("Expected learned quant params to contain a modules mapping.")
+    if set(modules.keys()) == {""}:
+        return _build_frozen_learned_linear(module, modules[""]), 1
+    return module, apply_learned_quant_params(module, params)
 
 
 def freeze_learnable_lwt(model: nn.Module) -> int:
@@ -263,6 +311,72 @@ def _freeze_children(module: nn.Module) -> int:
             continue
         frozen += _freeze_children(child)
     return frozen
+
+
+def _resolve_child_module(model: nn.Module, name: str) -> tuple[nn.Module, str, nn.Module]:
+    parts = name.split(".")
+    parent = model.get_submodule(".".join(parts[:-1])) if len(parts) > 1 else model
+    child_name = parts[-1]
+    if not hasattr(parent, child_name):
+        raise AttributeError(f"Could not find child module {name!r}.")
+    child = getattr(parent, child_name)
+    if not isinstance(child, nn.Module):
+        raise TypeError(f"Expected {name!r} to resolve to nn.Module, got {type(child)!r}.")
+    return parent, child_name, child
+
+
+def _build_frozen_learned_linear(module: nn.Module, entry: Mapping[str, Any]) -> FrozenLearnedFakeQuantLinear:
+    if isinstance(module, LearnableFakeQuantLinear):
+        wrapper = module
+    elif isinstance(module, nn.Linear):
+        wrapper = LearnableFakeQuantLinear(
+            module,
+            act_quant=entry.get("act_quant", "per_token"),
+            init_clip_multiplier=1.0,
+            min_clip_multiplier=float(entry.get("min_clip_multiplier", 0.05)),
+            max_clip_multiplier=float(entry.get("max_clip_multiplier", 4.0)),
+            enable_let=bool(entry.get("enable_let", entry.get("let_scale") is not None)),
+            init_let_scale=1.0,
+            min_let_scale=float(entry.get("min_let_scale", 0.05)),
+            max_let_scale=float(entry.get("max_let_scale", 20.0)),
+            qmax=float(entry.get("qmax", 448.0)),
+            eps=float(entry.get("eps", 1e-12)),
+        )
+    else:
+        raise TypeError(f"Expected nn.Linear or LearnableFakeQuantLinear, got {type(module)!r}.")
+
+    _load_entry_into_learnable_linear(wrapper, entry)
+    return wrapper.to_frozen()
+
+
+def _load_entry_into_learnable_linear(module: LearnableFakeQuantLinear, entry: Mapping[str, Any]) -> None:
+    clip_multiplier = torch.as_tensor(
+        entry["clip_multiplier"],
+        device=module.log_clip_multiplier.device,
+        dtype=module.log_clip_multiplier.dtype,
+    )
+    if tuple(clip_multiplier.shape) != tuple(module.log_clip_multiplier.shape):
+        raise ValueError(
+            f"clip_multiplier shape mismatch: expected {tuple(module.log_clip_multiplier.shape)}, "
+            f"got {tuple(clip_multiplier.shape)}"
+        )
+    with torch.no_grad():
+        module.log_clip_multiplier.copy_(torch.log(clip_multiplier))
+
+    let_scale = entry.get("let_scale")
+    if let_scale is None:
+        if module.log_let_scale is not None:
+            raise ValueError("Loaded params do not contain LET scale but target module has LET enabled.")
+        return
+    if module.log_let_scale is None:
+        raise ValueError("Loaded params contain LET scale but target module has LET disabled.")
+    let_tensor = torch.as_tensor(
+        let_scale,
+        device=module.log_let_scale.device,
+        dtype=module.log_let_scale.dtype,
+    ).reshape_as(module.log_let_scale)
+    with torch.no_grad():
+        module.log_let_scale.copy_(torch.log(let_tensor))
 
 
 def _should_skip(

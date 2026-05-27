@@ -16,7 +16,7 @@ set -euo pipefail
 MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B}"
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
 VERSION="${VERSION:-v1.0}"
-SAMPLE_SIZE="${SAMPLE_SIZE:-1000}"
+SAMPLE_SIZE="${SAMPLE_SIZE:-1}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 NUM_BEAMS="${NUM_BEAMS:-32}"
 NUM_RETURN_SEQUENCES="${NUM_RETURN_SEQUENCES:-32}"

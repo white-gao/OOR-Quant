@@ -9,14 +9,21 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, MutableMapping, Sequence
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from .apply import BaselineQuantSummary, apply_baseline_w8a8, apply_learnable_lwt, freeze_learnable_lwt
+from .apply import (
+    BaselineQuantSummary,
+    apply_baseline_w8a8,
+    apply_learnable_lwt,
+    export_learned_quant_params,
+    freeze_learnable_lwt,
+    learned_quantized_module_from_params,
+)
 from .calibrate_m1_lwt import Batch, CalibrationHistory, calibrate_block_mse
 from .modules import BaselineFakeQuantLinear, LearnableFakeQuantLinear
 from .quant import ActQuant
@@ -69,6 +76,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--evaluate", action="store_true")
     parser.add_argument("--calib_only", action="store_true")
     parser.add_argument("--save_model_state", action="store_true")
+    parser.add_argument("--save_quant_params", dest="save_quant_params", action="store_true", default=True)
+    parser.add_argument("--no_save_quant_params", dest="save_quant_params", action="store_false")
+    parser.add_argument("--load_quant_params", default=None)
+    parser.add_argument("--skip_calibration", action="store_true")
     return parser.parse_args()
 
 
@@ -271,6 +282,7 @@ def calibrate_model_layers_m1(
     act_quant: ActQuant,
     init_clip_multiplier: float,
     enable_let: bool = False,
+    learned_quant_params: MutableMapping[int, dict[str, Any]] | None = None,
 ) -> dict[int, CalibrationHistory]:
     layers = get_transformer_layers(model)
     histories: dict[int, CalibrationHistory] = {}
@@ -303,6 +315,8 @@ def calibrate_model_layers_m1(
             steps=steps,
             lr=lr,
         )
+        if learned_quant_params is not None:
+            learned_quant_params[layer_idx] = export_learned_quant_params(quant_block)
         if isinstance(quant_block, LearnableFakeQuantLinear):
             quant_block = quant_block.to_frozen()
         else:
@@ -339,6 +353,39 @@ def apply_baseline_layers(
             f"skipped_linears={summary.skipped_linears}"
         )
     return summaries
+
+
+def apply_learned_quant_params_to_layers(model: nn.Module, payload: Mapping[str, Any]) -> list[int]:
+    """Apply saved learned quant params to transformer layers and freeze wrappers."""
+    layers_payload = payload.get("layers")
+    if not isinstance(layers_payload, Mapping):
+        raise TypeError("learned quant params payload must contain a layers mapping.")
+
+    layers = get_transformer_layers(model)
+    applied: list[int] = []
+    for layer_key, layer_params in sorted(layers_payload.items(), key=lambda item: int(item[0])):
+        layer_idx = int(layer_key)
+        if layer_idx < 0 or layer_idx >= len(layers):
+            raise ValueError(f"Layer index {layer_idx} out of range for {len(layers)} layers.")
+        new_layer, _count = learned_quantized_module_from_params(layers[layer_idx], layer_params)
+        layers[layer_idx] = new_layer
+        applied.append(layer_idx)
+    return applied
+
+
+def build_learned_quant_params_payload(
+    *,
+    method: str,
+    act_quant: ActQuant,
+    layers: Mapping[int, dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "format_version": 1,
+        "method": method,
+        "quant_format": "fp8_e4m3fn",
+        "act_quant": act_quant,
+        "layers": dict(layers),
+    }
 
 
 def decode_generations(tokenizer: Any, sequences: torch.Tensor, prompt_len: int) -> list[str]:
@@ -517,7 +564,28 @@ def main() -> None:
     layer_indices = parse_layer_indices(args.layers, num_layers=len(layers))
     histories: dict[int, CalibrationHistory] = {}
     baseline_summaries: dict[int, BaselineQuantSummary] = {}
-    if args.mode in {"m1_lwt", "m2_lwt_let"}:
+    learned_quant_params: dict[int, dict[str, Any]] = {}
+    quant_params_payload: dict[str, Any] | None = None
+    quant_params_file: Path | None = None
+
+    if args.load_quant_params:
+        if args.mode not in {"m1_lwt", "m2_lwt_let"}:
+            raise ValueError("--load_quant_params is only supported for learnable modes.")
+        load_path = resolve_repo_path(args.load_quant_params)
+        try:
+            quant_params_payload = torch.load(load_path, map_location="cpu", weights_only=False)
+        except TypeError:
+            quant_params_payload = torch.load(load_path, map_location="cpu")
+        if not isinstance(quant_params_payload, Mapping):
+            raise TypeError(f"Expected quant params payload mapping, got {type(quant_params_payload)!r}.")
+        payload_method = quant_params_payload.get("method")
+        if payload_method is not None and payload_method != args.mode:
+            raise ValueError(f"Loaded quant params method={payload_method!r} does not match mode={args.mode!r}.")
+        layer_indices = apply_learned_quant_params_to_layers(model, quant_params_payload)
+        print(f"[load_quant_params] applied layers={layer_indices} from {load_path}")
+    elif args.skip_calibration:
+        raise ValueError("--skip_calibration requires --load_quant_params.")
+    elif args.mode in {"m1_lwt", "m2_lwt_let"}:
         calib_data = load_ad_data(
             tokenizer,
             str(resolve_repo_path(args.data_dir)),
@@ -541,6 +609,12 @@ def main() -> None:
             act_quant=args.act_quant,
             init_clip_multiplier=args.init_clip_multiplier,
             enable_let=args.mode == "m2_lwt_let",
+            learned_quant_params=learned_quant_params,
+        )
+        quant_params_payload = build_learned_quant_params_payload(
+            method=args.mode,
+            act_quant=args.act_quant,
+            layers=learned_quant_params,
         )
     elif args.mode == "baseline_w8a8":
         baseline_summaries = apply_baseline_layers(
@@ -550,6 +624,10 @@ def main() -> None:
         )
     else:
         raise ValueError(f"Unsupported mode: {args.mode}")
+
+    if args.save_quant_params and learned_quant_params:
+        quant_params_file = output_file.parent / f"{args.mode}_learned_quant_params.pt"
+        torch.save(quant_params_payload, quant_params_file)
 
     config = {
         "method": args.mode,
@@ -569,6 +647,10 @@ def main() -> None:
         "num_return_sequences": args.num_return_sequences,
         "max_new_tokens": args.max_new_tokens,
         "seed": args.seed,
+        "save_quant_params": args.save_quant_params,
+        "load_quant_params": args.load_quant_params,
+        "skip_calibration": args.skip_calibration,
+        "quant_params_file": None if quant_params_file is None else str(quant_params_file),
         "histories": histories_to_jsonable(histories),
         "baseline_summaries": summaries_to_jsonable(baseline_summaries),
     }
