@@ -47,10 +47,13 @@ class BaselineFakeQuantLinear(nn.Module):
         else:
             self.register_buffer("bias", None, persistent=True)
 
+    def forward_prepared(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.weight_qdq, self.bias)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.act_quant == "per_token":
             x = activation_per_token_qdq_forward(x, qmax=self.qmax, eps=self.eps)
-        return F.linear(x, self.weight_qdq, self.bias)
+        return self.forward_prepared(x)
 
     def extra_repr(self) -> str:
         return (
@@ -206,12 +209,15 @@ class LearnableFakeQuantLinear(nn.Module):
     def forward_fp(self, x: torch.Tensor) -> torch.Tensor:
         return F.linear(x, self.weight_frozen, self.bias_frozen)
 
+    def forward_prepared(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.quantized_weight(), self.bias_frozen)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not self.quant_enabled:
             return self.forward_fp(x)
         x = self._let_activation(x)
         x = self._quantize_activation(x)
-        return F.linear(x, self.quantized_weight(), self.bias_frozen)
+        return self.forward_prepared(x)
 
     def to_frozen(self) -> "FrozenLearnedFakeQuantLinear":
         with torch.no_grad():
@@ -276,8 +282,11 @@ class FrozenLearnedFakeQuantLinear(nn.Module):
         view_shape = (1,) * (x.ndim - 1) + (-1,)
         return x / self.let_scale.to(device=x.device, dtype=x.dtype).view(view_shape)
 
+    def forward_prepared(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.weight_qdq, self.bias)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self._let_activation(x)
         if self.act_quant == "per_token":
             x = activation_per_token_qdq_forward(x, qmax=self.qmax, eps=self.eps)
-        return F.linear(x, self.weight_qdq, self.bias)
+        return self.forward_prepared(x)

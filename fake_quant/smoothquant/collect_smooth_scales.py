@@ -27,7 +27,7 @@ except ImportError:
     from fake_quant.smoothquant.core import save_activation_absmax
 
 
-DEFAULT_MODEL_PATH = "/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B"
+DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B/"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data"
 DEFAULT_OUTPUT_PATH = "fake_quant/smoothquant/scales/onerec_ad_smoothquant_absmax_sample128.pt"
 

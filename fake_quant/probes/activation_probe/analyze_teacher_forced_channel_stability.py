@@ -37,7 +37,7 @@ from fake_quant.probes.activation_probe.profile_teacher_forced_decode_steps impo
 )
 
 
-DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B"
+DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B/"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data"
 DEFAULT_OUTPUT_DIR = (
     "fake_quant/probes/activation_probe/activation_profiles/v1.0/"

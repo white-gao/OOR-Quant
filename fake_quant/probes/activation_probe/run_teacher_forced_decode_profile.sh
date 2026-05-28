@@ -5,7 +5,7 @@ set -euo pipefail
 # Run from repository root:
 #   bash fake_quant/probes/activation_probe/run_teacher_forced_decode_profile.sh
 
-MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B}"
+MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B/}"
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
 VERSION="${VERSION:-v1.0}"
 SAMPLE_SIZE="${SAMPLE_SIZE:-128}"
@@ -16,8 +16,8 @@ MAX_TOKENS="${MAX_TOKENS:-0}"
 OUTLIER_THRESHOLDS="${OUTLIER_THRESHOLDS:-6,10,20}"
 OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/probes/activation_probe/activation_profiles/${VERSION}/OneRec-1.7B-ad-teacher-forced-sample-${SAMPLE_SIZE}}"
 
-if [[ ! -e "$MODEL_PATH" && -e "/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B" ]]; then
-  MODEL_PATH="/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B"
+if [[ ! -e "$MODEL_PATH" && -e "/home/guowei/OneRec-1.7B/" ]]; then
+  MODEL_PATH="/home/guowei/OneRec-1.7B/"
 fi
 
 if [[ ! -f "${DATA_DIR}/ad/ad_test.parquet" && -f "/zssd/home/yhhuang/Projects/OOR-Quant/data/onerec_data/benchmark-data/ad/ad_test.parquet" ]]; then

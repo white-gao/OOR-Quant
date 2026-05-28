@@ -29,6 +29,8 @@ def calibrate_block_mse(
     lr: float = 1e-3,
     eps: float = 1e-12,
     max_grad_norm: float | None = 1.0,
+    train_lwt: bool = True,
+    train_let: bool = True,
 ) -> CalibrationHistory:
     """Optimize M1 LWT parameters with plain block-output reconstruction MSE."""
     if steps <= 0:
@@ -37,9 +39,21 @@ def calibrate_block_mse(
     if not batch_list:
         raise ValueError("batches must contain at least one calibration batch.")
 
-    params = list(learnable_lwt_parameters(quant_block))
+    all_params = list(learnable_lwt_parameters(quant_block))
+    params = list(
+        learnable_lwt_parameters(
+            quant_block,
+            include_lwt=train_lwt,
+            include_let=train_let,
+        )
+    )
     if not params:
-        raise ValueError("quant_block does not contain LearnableFakeQuantLinear modules.")
+        raise ValueError("quant_block does not contain selected learnable quantization parameters.")
+
+    selected_param_ids = {id(param) for param in params}
+    requires_grad_state = [(param, param.requires_grad) for param in all_params]
+    for param in all_params:
+        param.requires_grad_(id(param) in selected_param_ids)
 
     teacher_was_training = teacher_block.training
     quant_was_training = quant_block.training
@@ -75,6 +89,9 @@ def calibrate_block_mse(
         batches=batch_list,
         eps=eps,
     )
+
+    for param, requires_grad in requires_grad_state:
+        param.requires_grad_(requires_grad)
 
     teacher_block.train(teacher_was_training)
     quant_block.train(quant_was_training)

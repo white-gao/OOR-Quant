@@ -23,12 +23,11 @@ for path in (PROJECT_ROOT, BENCHMARK_ROOT):
 from benchmark.tasks.v1_0.registry import get_loader, get_task_config
 
 
-DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B"
+DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B/"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data"
 DEFAULT_OUTPUT_DIR = "fake_quant/probes/activation_probe/activation_profiles/v1.0/channel_overlap_sample_0"
 FALLBACK_MODEL_PATHS = [
-    "/zssd/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B",
-    "/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B",
+    "/home/guowei/OneRec-1.7B/",
 ]
 FALLBACK_DATA_DIRS = [
     "/zssd/home/yhhuang/Projects/OOR-Quant/data/onerec_data/benchmark-data",

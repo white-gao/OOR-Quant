@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B}"
+MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B/}"
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
 DEVICE="${DEVICE:-cuda:7}"
 DTYPE="${DTYPE:-bfloat16}"

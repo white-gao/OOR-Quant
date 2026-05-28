@@ -13,7 +13,7 @@ set -euo pipefail
 #   RUN_WEIGHT_ONLY=false RUN_WEIGHT_ACT=true bash fake_quant/run_hf_ad_full_quant.sh
 #   SKIP_DONE=false bash fake_quant/run_hf_ad_full_quant.sh
 
-MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B}"
+MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B/}"
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
 VERSION="${VERSION:-v1.0}"
 SAMPLE_SIZE="${SAMPLE_SIZE:-1}"

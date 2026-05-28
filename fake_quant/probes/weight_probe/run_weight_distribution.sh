@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Plot OneRec weight distributions. Run from repository root.
 
-MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B}"
+MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B/}"
 VERSION="${VERSION:-v1.0}"
 OUTPUT_DIR="${OUTPUT_DIR:-fake_quant/probes/weight_probe/results/${VERSION}/OneRec-1.7B}"
 SAMPLE_PER_TENSOR="${SAMPLE_PER_TENSOR:-2000000}"

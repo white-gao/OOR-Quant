@@ -56,6 +56,27 @@ class TinyMLP(nn.Module):
         self.up_proj = nn.Linear(4, 8, bias=False)
 
 
+class TinyQwen3MLP(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate_proj = nn.Linear(4, 8, bias=False)
+        self.up_proj = nn.Linear(4, 8, bias=False)
+        self.down_proj = nn.Linear(8, 4, bias=False)
+        self.act_fn = nn.SiLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+
+
+class TinyQwen3MLPBlock(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.mlp = TinyQwen3MLP()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.mlp(x)
+
+
 class TinyQwenLikeBlock(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -155,6 +176,24 @@ def test_let_clip_base_tracks_scaled_weight_distribution() -> None:
     torch.testing.assert_close(module.clip, expected, rtol=0, atol=0)
 
 
+def test_shared_input_mode_patches_qwen_like_mlp_and_runs() -> None:
+    torch.manual_seed(11)
+    block = TinyQwen3MLPBlock().eval()
+
+    summary = apply_learnable_lwt(
+        block,
+        act_quant="per_token",
+        act_quant_mode="shared_input",
+        enable_let=True,
+    )
+
+    assert summary.replaced_linears == 3
+    assert summary.shared_mlp_modules == 1
+    assert block.mlp.gate_proj.log_let_scale is block.mlp.up_proj.log_let_scale
+    output = block(torch.randn(2, 4))
+    assert output.shape == (2, 4)
+
+
 def test_apply_learnable_lwt_shares_known_let_input_groups() -> None:
     block = TinyQwenLikeBlock()
 
@@ -169,6 +208,21 @@ def test_apply_learnable_lwt_shares_known_let_input_groups() -> None:
     assert gate.log_let_scale is up.log_let_scale
     assert q.log_let_scale is not gate.log_let_scale
     assert len(list(learnable_lwt_parameters(block))) == 7
+
+
+def test_learnable_lwt_parameters_can_filter_lwt_and_let() -> None:
+    block = TinyQwenLikeBlock()
+
+    apply_learnable_lwt(block, act_quant="per_token", enable_let=True)
+
+    lwt_params = list(learnable_lwt_parameters(block, include_lwt=True, include_let=False))
+    let_params = list(learnable_lwt_parameters(block, include_lwt=False, include_let=True))
+    all_params = list(learnable_lwt_parameters(block))
+
+    assert len(lwt_params) == 5
+    assert len(let_params) == 2
+    assert len(all_params) == 7
+    assert {id(param) for param in lwt_params}.isdisjoint({id(param) for param in let_params})
 
 
 def test_let_parameters_get_gradient_and_freeze_matches_forward() -> None:

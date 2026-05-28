@@ -19,7 +19,7 @@ set -euo pipefail
 # Run benchmark on the cached ad 1000-sample subset:
 #   RUN_EVAL=1 SAMPLE_SIZE=1000 EXPERIMENTS="gate_only up_only" bash scripts/run_fp8_qdq_experiments.sh
 
-MODEL_PATH="${MODEL_PATH:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B}"
+MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B/}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots}"
 FP8_FORMAT="${FP8_FORMAT:-e4m3}"
 SCALE_GRANULARITY="${SCALE_GRANULARITY:-per_row}"

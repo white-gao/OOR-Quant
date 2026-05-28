@@ -15,25 +15,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-MODE="${MODE:-m2_lwt_let}"  # m1_lwt or m2_lwt_let
-MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B}"
+MODE="${MODE:-m2_lwt_let}"  # m1_lwt, m2_let, or m2_lwt_let
+MODEL_PATH="${MODEL_PATH:-/home/guowei/OneRec-1.7B/}"
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data}"
+CALIB_DATA_DIR="${CALIB_DATA_DIR:-}"
+EVAL_DATA_DIR="${EVAL_DATA_DIR:-}"
+CALIB_SPLIT="${CALIB_SPLIT:-}"
 MODEL_NAME="${MODEL_NAME:-}"
 
 LAYERS="${LAYERS:-last:1}"
 ACT_QUANT="${ACT_QUANT:-per_token}"
+ACT_QUANT_MODE="${ACT_QUANT_MODE:-shared_input}"
 DTYPE="${DTYPE:-bfloat16}"
 DEVICE="${DEVICE:-cuda}"
 DEVICE_MAP="${DEVICE_MAP:-}"
 
 CALIB_SAMPLE_SIZE="${CALIB_SAMPLE_SIZE:-128}"
 CALIB_OFFSET="${CALIB_OFFSET:-1000}"
-CALIB_BATCH_SIZE="${CALIB_BATCH_SIZE:-1}"
-
 EVAL_SAMPLE_SIZE="${EVAL_SAMPLE_SIZE:-1000}"
 EVAL_OFFSET="${EVAL_OFFSET:-0}"
-EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"
-
 STEPS="${STEPS:-200}"
 LR="${LR:-1e-3}"
 INIT_CLIP_MULTIPLIER="${INIT_CLIP_MULTIPLIER:-1.0}"
@@ -62,14 +62,13 @@ args=(
   --layers "${LAYERS}"
   --calib_sample_size "${CALIB_SAMPLE_SIZE}"
   --calib_offset "${CALIB_OFFSET}"
-  --calib_batch_size "${CALIB_BATCH_SIZE}"
   --eval_sample_size "${EVAL_SAMPLE_SIZE}"
   --eval_offset "${EVAL_OFFSET}"
-  --eval_batch_size "${EVAL_BATCH_SIZE}"
   --steps "${STEPS}"
   --lr "${LR}"
   --init_clip_multiplier "${INIT_CLIP_MULTIPLIER}"
   --act_quant "${ACT_QUANT}"
+  --act_quant_mode "${ACT_QUANT_MODE}"
   --dtype "${DTYPE}"
   --device "${DEVICE}"
   --num_beams "${NUM_BEAMS}"
@@ -80,6 +79,18 @@ args=(
 
 if [[ -n "${MODEL_NAME}" ]]; then
   args+=(--model_name "${MODEL_NAME}")
+fi
+
+if [[ -n "${CALIB_DATA_DIR}" ]]; then
+  args+=(--calib_data_dir "${CALIB_DATA_DIR}")
+fi
+
+if [[ -n "${CALIB_SPLIT}" ]]; then
+  args+=(--calib_split "${CALIB_SPLIT}")
+fi
+
+if [[ -n "${EVAL_DATA_DIR}" ]]; then
+  args+=(--eval_data_dir "${EVAL_DATA_DIR}")
 fi
 
 if [[ -n "${DEVICE_MAP}" ]]; then
@@ -118,6 +129,7 @@ echo "Running learnable quantization:"
 printf '  MODE=%s\n' "${MODE}"
 printf '  MODEL_PATH=%s\n' "${MODEL_PATH}"
 printf '  DATA_DIR=%s\n' "${DATA_DIR}"
+printf '  CALIB_DATA_DIR=%s EVAL_DATA_DIR=%s CALIB_SPLIT=%s\n' "${CALIB_DATA_DIR}" "${EVAL_DATA_DIR}" "${CALIB_SPLIT}"
 printf '  OUTPUT_DIR=%s\n' "${OUTPUT_DIR}"
 printf '  LAYERS=%s\n' "${LAYERS}"
 printf '  CALIB_SAMPLE_SIZE=%s CALIB_OFFSET=%s\n' "${CALIB_SAMPLE_SIZE}" "${CALIB_OFFSET}"

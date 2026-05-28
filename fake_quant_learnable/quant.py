@@ -7,6 +7,7 @@ import torch
 
 FP8_MAX = 448.0
 ActQuant = Literal["none", "per_token"]
+ActQuantMode = Literal["per_linear", "shared_input"]
 
 
 def require_fp8() -> torch.dtype:

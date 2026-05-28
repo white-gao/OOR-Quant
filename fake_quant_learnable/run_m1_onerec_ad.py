@@ -9,7 +9,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 import torch
 import torch.nn as nn
@@ -22,11 +22,12 @@ from .apply import (
     apply_learnable_lwt,
     export_learned_quant_params,
     freeze_learnable_lwt,
+    install_shared_input_activation_quantization,
     learned_quantized_module_from_params,
 )
 from .calibrate_m1_lwt import Batch, CalibrationHistory, calibrate_block_mse
 from .modules import BaselineFakeQuantLinear, LearnableFakeQuantLinear
-from .quant import ActQuant
+from .quant import ActQuant, ActQuantMode
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -39,32 +40,38 @@ from benchmark import Benchmark  # noqa: E402
 from benchmark.tasks.v1_0.registry import get_loader, get_task_config  # noqa: E402
 
 
-DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B"
+DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B/"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run OneRec AD evaluation with baseline, M1 LWT, or M2 LWT+LET FP8 W+A fake quantization."
+        description="Run OneRec AD evaluation with baseline, M1 LWT, M2 LET-only, or M2 LWT+LET FP8 W+A fake quantization."
     )
     parser.add_argument("--model_path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--model_name", default=None)
     parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
+    parser.add_argument("--calib_data_dir", default=None)
     parser.add_argument("--eval_data_dir", default=None)
     parser.add_argument("--output_dir", default="fake_quant_learnable/results/ptq_ad")
-    parser.add_argument("--mode", default="m1_lwt", choices=["baseline_w8a8", "m1_lwt", "m2_lwt_let"])
+    parser.add_argument("--mode", default="m1_lwt", choices=["baseline_w8a8", "m1_lwt", "m2_let", "m2_lwt_let"])
     parser.add_argument("--split", default="test", choices=["test"])
+    parser.add_argument("--calib_split", default=None, choices=["test", "calib"])
     parser.add_argument("--calib_sample_size", default="128")
     parser.add_argument("--calib_offset", type=int, default=0)
     parser.add_argument("--eval_sample_size", default="128")
     parser.add_argument("--eval_offset", type=int, default=0)
-    parser.add_argument("--calib_batch_size", type=int, default=1)
-    parser.add_argument("--eval_batch_size", type=int, default=1)
     parser.add_argument("--layers", default="last:1", help='Layer spec: "all", "last:K", "0,2-4".')
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--init_clip_multiplier", type=float, default=1.0)
     parser.add_argument("--act_quant", default="per_token", choices=["none", "per_token"])
+    parser.add_argument(
+        "--act_quant_mode",
+        default="shared_input",
+        choices=["per_linear", "shared_input"],
+        help="per_linear quantizes each Linear input independently; shared_input reuses qkv/gate-up activation QDQ.",
+    )
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--device_map", default=None)
@@ -104,6 +111,11 @@ def resolve_repo_path(path: str | os.PathLike[str]) -> Path:
     if path_obj.is_absolute():
         return path_obj
     return PROJECT_ROOT / path_obj
+
+
+def default_calib_split(data_dir: str | os.PathLike[str], fallback_split: str) -> str:
+    calib_file = resolve_repo_path(data_dir) / "ad" / "ad_calib.parquet"
+    return "calib" if calib_file.exists() else fallback_split
 
 
 def set_seed(seed: int) -> None:
@@ -206,13 +218,6 @@ def load_ad_data(
     return dict(items)
 
 
-def iter_batches(items: Sequence[Any], batch_size: int) -> Iterator[list[Any]]:
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be positive, got {batch_size}")
-    for start in range(0, len(items), batch_size):
-        yield list(items[start : start + batch_size])
-
-
 def format_prompt(prompt: str, prompt_token: str) -> str:
     if prompt_token and not prompt.endswith(prompt_token):
         return prompt + prompt_token
@@ -223,26 +228,18 @@ def build_model_batches(
     *,
     tokenizer: Any,
     prompts: Sequence[str],
-    batch_size: int,
     device: torch.device,
 ) -> list[dict[str, torch.Tensor]]:
-    old_padding_side = getattr(tokenizer, "padding_side", None)
-    if old_padding_side is not None:
-        tokenizer.padding_side = "left"
-    try:
-        batches: list[dict[str, torch.Tensor]] = []
-        for prompt_batch in iter_batches(list(prompts), batch_size):
-            encoded = tokenizer(prompt_batch, return_tensors="pt", padding=True)
-            batches.append(
-                {
-                    key: value.to(device) if torch.is_tensor(value) else value
-                    for key, value in encoded.items()
-                }
-            )
-        return batches
-    finally:
-        if old_padding_side is not None:
-            tokenizer.padding_side = old_padding_side
+    batches: list[dict[str, torch.Tensor]] = []
+    for prompt in prompts:
+        encoded = tokenizer(prompt, return_tensors="pt")
+        batches.append(
+            {
+                key: value.to(device) if torch.is_tensor(value) else value
+                for key, value in encoded.items()
+            }
+        )
+    return batches
 
 
 def capture_layer_input_batches(
@@ -280,8 +277,10 @@ def calibrate_model_layers_m1(
     steps: int,
     lr: float,
     act_quant: ActQuant,
-    init_clip_multiplier: float,
+    act_quant_mode: ActQuantMode = "per_linear",
+    init_clip_multiplier: float = 1.0,
     enable_let: bool = False,
+    train_lwt: bool = True,
     learned_quant_params: MutableMapping[int, dict[str, Any]] | None = None,
 ) -> dict[int, CalibrationHistory]:
     layers = get_transformer_layers(model)
@@ -305,6 +304,7 @@ def calibrate_model_layers_m1(
             apply_learnable_lwt(
                 quant_block,
                 act_quant=act_quant,
+                act_quant_mode=act_quant_mode,
                 init_clip_multiplier=init_clip_multiplier,
                 enable_let=enable_let,
             )
@@ -314,6 +314,8 @@ def calibrate_model_layers_m1(
             batches=captured,
             steps=steps,
             lr=lr,
+            train_lwt=train_lwt,
+            train_let=enable_let,
         )
         if learned_quant_params is not None:
             learned_quant_params[layer_idx] = export_learned_quant_params(quant_block)
@@ -323,7 +325,10 @@ def calibrate_model_layers_m1(
             freeze_learnable_lwt(quant_block)
         layers[layer_idx] = quant_block
         histories[layer_idx] = history
-        label = "M2" if enable_let else "M1"
+        if enable_let:
+            label = "M2-LET" if not train_lwt else "M2"
+        else:
+            label = "M1"
         print(
             f"[{label}] layer={layer_idx} initial_loss={history.initial_loss:.6g} "
             f"final_loss={history.final_loss:.6g}"
@@ -336,6 +341,7 @@ def apply_baseline_layers(
     model: nn.Module,
     layer_indices: Sequence[int],
     act_quant: ActQuant,
+    act_quant_mode: ActQuantMode = "per_linear",
 ) -> dict[int, BaselineQuantSummary]:
     """Apply min-max FP8 W+A fake quantization to selected transformer layers."""
     layers = get_transformer_layers(model)
@@ -346,16 +352,23 @@ def apply_baseline_layers(
             layers[layer_idx] = BaselineFakeQuantLinear(layer, act_quant=act_quant)
             summary = BaselineQuantSummary(replaced_linears=1, skipped_linears=0)
         else:
-            summary = apply_baseline_w8a8(layer, act_quant=act_quant)
+            summary = apply_baseline_w8a8(layer, act_quant=act_quant, act_quant_mode=act_quant_mode)
         summaries[layer_idx] = summary
         print(
             f"[baseline_w8a8] layer={layer_idx} replaced_linears={summary.replaced_linears} "
-            f"skipped_linears={summary.skipped_linears}"
+            f"skipped_linears={summary.skipped_linears}, "
+            f"shared_attention_modules={summary.shared_attention_modules}, "
+            f"shared_mlp_modules={summary.shared_mlp_modules}"
         )
     return summaries
 
 
-def apply_learned_quant_params_to_layers(model: nn.Module, payload: Mapping[str, Any]) -> list[int]:
+def apply_learned_quant_params_to_layers(
+    model: nn.Module,
+    payload: Mapping[str, Any],
+    *,
+    act_quant_mode: ActQuantMode = "per_linear",
+) -> list[int]:
     """Apply saved learned quant params to transformer layers and freeze wrappers."""
     layers_payload = payload.get("layers")
     if not isinstance(layers_payload, Mapping):
@@ -369,6 +382,8 @@ def apply_learned_quant_params_to_layers(model: nn.Module, payload: Mapping[str,
             raise ValueError(f"Layer index {layer_idx} out of range for {len(layers)} layers.")
         new_layer, _count = learned_quantized_module_from_params(layers[layer_idx], layer_params)
         layers[layer_idx] = new_layer
+        if act_quant_mode == "shared_input":
+            install_shared_input_activation_quantization(new_layer)
         applied.append(layer_idx)
     return applied
 
@@ -377,6 +392,7 @@ def build_learned_quant_params_payload(
     *,
     method: str,
     act_quant: ActQuant,
+    act_quant_mode: ActQuantMode,
     layers: Mapping[int, dict[str, Any]],
 ) -> dict[str, Any]:
     return {
@@ -384,6 +400,7 @@ def build_learned_quant_params_payload(
         "method": method,
         "quant_format": "fp8_e4m3fn",
         "act_quant": act_quant,
+        "act_quant_mode": act_quant_mode,
         "layers": dict(layers),
     }
 
@@ -396,51 +413,32 @@ def decode_generations(tokenizer: Any, sequences: torch.Tensor, prompt_len: int)
     return generations
 
 
-def generate_batch(
+def generate_one(
     *,
     model: nn.Module,
     tokenizer: Any,
-    prompts: Sequence[str],
+    prompt: str,
     input_device: torch.device,
     args: argparse.Namespace,
-) -> list[list[str]]:
-    if not prompts:
-        return []
+) -> list[str]:
+    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = {
+        key: value.to(input_device) if torch.is_tensor(value) else value
+        for key, value in inputs.items()
+    }
+    prompt_len = int(inputs["input_ids"].shape[-1])
+    with torch.inference_mode():
+        output = model.generate(
+            **inputs,
+            max_new_tokens=args.max_new_tokens,
+            num_beams=args.num_beams,
+            num_return_sequences=args.num_return_sequences,
+            do_sample=False,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
 
-    old_padding_side = getattr(tokenizer, "padding_side", None)
-    if old_padding_side is not None:
-        tokenizer.padding_side = "left"
-    try:
-        inputs = tokenizer(list(prompts), return_tensors="pt", padding=True)
-        inputs = {
-            key: value.to(input_device) if torch.is_tensor(value) else value
-            for key, value in inputs.items()
-        }
-        prompt_len = int(inputs["input_ids"].shape[-1])
-        with torch.inference_mode():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=args.max_new_tokens,
-                num_beams=args.num_beams,
-                num_return_sequences=args.num_return_sequences,
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-    finally:
-        if old_padding_side is not None:
-            tokenizer.padding_side = old_padding_side
-
-    output = output.detach().cpu()
-    if output.shape[0] % len(prompts) != 0:
-        raise RuntimeError(f"Unexpected generate output shape: {tuple(output.shape)}")
-    returns_per_prompt = output.shape[0] // len(prompts)
-    generations = []
-    for batch_idx in range(len(prompts)):
-        start = batch_idx * returns_per_prompt
-        end = start + returns_per_prompt
-        generations.append(decode_generations(tokenizer, output[start:end], prompt_len))
-    return generations
+    return decode_generations(tokenizer, output.detach().cpu(), prompt_len)
 
 
 def result_path(output_dir: str, model_name: str, split: str) -> Path:
@@ -510,6 +508,8 @@ def summaries_to_jsonable(summaries: Mapping[int, BaselineQuantSummary]) -> dict
         str(layer_idx): {
             "replaced_linears": summary.replaced_linears,
             "skipped_linears": summary.skipped_linears,
+            "shared_attention_modules": summary.shared_attention_modules,
+            "shared_mlp_modules": summary.shared_mlp_modules,
         }
         for layer_idx, summary in summaries.items()
     }
@@ -529,8 +529,6 @@ def _detach_tree(obj: Any) -> Any:
 
 def main() -> None:
     args = parse_args()
-    if args.calib_batch_size <= 0 or args.eval_batch_size <= 0:
-        raise ValueError("Batch sizes must be positive.")
     if args.calib_offset < 0 or args.eval_offset < 0:
         raise ValueError("Offsets must be non-negative.")
     set_seed(args.seed)
@@ -559,6 +557,9 @@ def main() -> None:
 
     task_config = get_task_config("ad")
     prompt_token = task_config.get("generation_config", {}).get("prompt_token", "<|sid_begin|>")
+    calib_data_dir = args.calib_data_dir or args.data_dir
+    eval_data_dir = args.eval_data_dir or args.data_dir
+    calib_split = args.calib_split or default_calib_split(calib_data_dir, args.split)
 
     layers = get_transformer_layers(model)
     layer_indices = parse_layer_indices(args.layers, num_layers=len(layers))
@@ -569,7 +570,7 @@ def main() -> None:
     quant_params_file: Path | None = None
 
     if args.load_quant_params:
-        if args.mode not in {"m1_lwt", "m2_lwt_let"}:
+        if args.mode not in {"m1_lwt", "m2_let", "m2_lwt_let"}:
             raise ValueError("--load_quant_params is only supported for learnable modes.")
         load_path = resolve_repo_path(args.load_quant_params)
         try:
@@ -581,15 +582,25 @@ def main() -> None:
         payload_method = quant_params_payload.get("method")
         if payload_method is not None and payload_method != args.mode:
             raise ValueError(f"Loaded quant params method={payload_method!r} does not match mode={args.mode!r}.")
-        layer_indices = apply_learned_quant_params_to_layers(model, quant_params_payload)
+        payload_act_quant_mode = quant_params_payload.get("act_quant_mode")
+        if payload_act_quant_mode is not None and payload_act_quant_mode != args.act_quant_mode:
+            raise ValueError(
+                f"Loaded quant params act_quant_mode={payload_act_quant_mode!r} "
+                f"does not match requested act_quant_mode={args.act_quant_mode!r}."
+            )
+        layer_indices = apply_learned_quant_params_to_layers(
+            model,
+            quant_params_payload,
+            act_quant_mode=args.act_quant_mode,
+        )
         print(f"[load_quant_params] applied layers={layer_indices} from {load_path}")
     elif args.skip_calibration:
         raise ValueError("--skip_calibration requires --load_quant_params.")
-    elif args.mode in {"m1_lwt", "m2_lwt_let"}:
+    elif args.mode in {"m1_lwt", "m2_let", "m2_lwt_let"}:
         calib_data = load_ad_data(
             tokenizer,
-            str(resolve_repo_path(args.data_dir)),
-            args.split,
+            str(resolve_repo_path(calib_data_dir)),
+            calib_split,
             parse_sample_size(args.calib_sample_size),
             sample_offset=args.calib_offset,
         )
@@ -597,7 +608,6 @@ def main() -> None:
         calib_batches = build_model_batches(
             tokenizer=tokenizer,
             prompts=calib_prompts,
-            batch_size=args.calib_batch_size,
             device=input_device,
         )
         histories = calibrate_model_layers_m1(
@@ -607,13 +617,16 @@ def main() -> None:
             steps=args.steps,
             lr=args.lr,
             act_quant=args.act_quant,
+            act_quant_mode=args.act_quant_mode,
             init_clip_multiplier=args.init_clip_multiplier,
-            enable_let=args.mode == "m2_lwt_let",
+            enable_let=args.mode in {"m2_let", "m2_lwt_let"},
+            train_lwt=args.mode != "m2_let",
             learned_quant_params=learned_quant_params,
         )
         quant_params_payload = build_learned_quant_params_payload(
             method=args.mode,
             act_quant=args.act_quant,
+            act_quant_mode=args.act_quant_mode,
             layers=learned_quant_params,
         )
     elif args.mode == "baseline_w8a8":
@@ -621,6 +634,7 @@ def main() -> None:
             model=model,
             layer_indices=layer_indices,
             act_quant=args.act_quant,
+            act_quant_mode=args.act_quant_mode,
         )
     else:
         raise ValueError(f"Unsupported mode: {args.mode}")
@@ -636,12 +650,16 @@ def main() -> None:
         "lr": args.lr,
         "init_clip_multiplier": args.init_clip_multiplier,
         "act_quant": args.act_quant,
+        "act_quant_mode": args.act_quant_mode,
+        "data_dir": args.data_dir,
+        "calib_data_dir": calib_data_dir,
+        "eval_data_dir": eval_data_dir,
+        "split": args.split,
+        "calib_split": calib_split,
         "calib_sample_size": args.calib_sample_size,
         "calib_offset": args.calib_offset,
-        "calib_batch_size": args.calib_batch_size,
         "eval_sample_size": args.eval_sample_size,
         "eval_offset": args.eval_offset,
-        "eval_batch_size": args.eval_batch_size,
         "dtype": args.dtype,
         "num_beams": args.num_beams,
         "num_return_sequences": args.num_return_sequences,
@@ -656,6 +674,7 @@ def main() -> None:
     }
     config_filename = {
         "m1_lwt": "m1_calibration.json",
+        "m2_let": "m2_let_calibration.json",
         "m2_lwt_let": "m2_calibration.json",
         "baseline_w8a8": "baseline_w8a8_config.json",
     }[args.mode]
@@ -670,7 +689,7 @@ def main() -> None:
 
     test_data = load_ad_data(
         tokenizer,
-        str(resolve_repo_path(args.data_dir)),
+        str(resolve_repo_path(eval_data_dir)),
         args.split,
         parse_sample_size(args.eval_sample_size),
         sample_offset=args.eval_offset,
@@ -678,22 +697,19 @@ def main() -> None:
     test_items = list(test_data.items())
     generations: dict[str, list[str]] = {}
     start = time.time()
-    for batch in tqdm(
-        iter_batches(test_items, args.eval_batch_size),
-        total=(len(test_items) + args.eval_batch_size - 1) // args.eval_batch_size,
+    for sample_id, sample in tqdm(
+        test_items,
+        total=len(test_items),
         desc=f"{args.mode} AD generation",
     ):
-        sample_ids = [sample_id for sample_id, _sample in batch]
-        prompts = [format_prompt(sample["prompt"], prompt_token) for _sample_id, sample in batch]
-        batch_generations = generate_batch(
+        prompt = format_prompt(sample["prompt"], prompt_token)
+        generations[sample_id] = generate_one(
             model=model,
             tokenizer=tokenizer,
-            prompts=prompts,
+            prompt=prompt,
             input_device=input_device,
             args=args,
         )
-        for sample_id, sample_generations in zip(sample_ids, batch_generations):
-            generations[sample_id] = sample_generations
     total_time = time.time() - start
 
     save_results(
@@ -706,7 +722,7 @@ def main() -> None:
         config=config,
     )
     if args.evaluate:
-        maybe_evaluate(args.output_dir, args.eval_data_dir or args.data_dir, args.overwrite)
+        maybe_evaluate(args.output_dir, eval_data_dir, args.overwrite)
 
 
 if __name__ == "__main__":

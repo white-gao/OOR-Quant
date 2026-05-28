@@ -26,26 +26,30 @@ backward gradients so the clip/scale parameters can learn.
 ```text
 baseline_w8a8: min-max weight FP8 + activation FP8, no training
 m1_lwt:       learnable per-output-channel weight clipping + activation FP8
+m2_let:       learnable LET only, with clipping fixed at min-max
 m2_lwt_let:   M1 + learnable per-input-channel LET scale
 ```
 
-M1 validates the learnable PTQ chain; M2 uses the same loss and optimizer but
-adds LET parameters:
+M1 validates the learnable PTQ chain. `m2_let` ablates LWT by training only
+LET while keeping the clipping multiplier fixed. `m2_lwt_let` uses the same
+loss and optimizer but trains both LWT and LET parameters:
 
 ```text
 weight: frozen W + learnable per-output-channel clipping
-activation: fixed per-token QDQ
+activation: fixed per-token QDQ; `shared_input` reuses one QDQ for q/k/v and one QDQ for gate/up
 loss: plain Transformer block output MSE
 M1: no LET
-M2: learnable LET with x/s and W*s
+M2-LET: learnable LET with x/s and W*s, fixed clip multiplier
+M2-LWT-LET: learnable LET plus learnable clipping
 M2: q/k/v share one LET parameter when names match; gate/up share one LET parameter
 no SID-guided gradient weighting
 no Linear-output guided loss
 ```
 
 The production model weights are not updated. M1 trains
-`LearnableFakeQuantLinear.log_clip_multiplier`; M2 additionally trains
-`LearnableFakeQuantLinear.log_let_scale`. Known Qwen-style shared-input groups
+`LearnableFakeQuantLinear.log_clip_multiplier`; `m2_let` trains only
+`LearnableFakeQuantLinear.log_let_scale`; `m2_lwt_let` trains both parameters.
+Known Qwen-style shared-input groups
 (`q_proj/k_proj/v_proj` and `gate_proj/up_proj`) share a single LET parameter;
 other Linear modules keep independent LET parameters.
 
@@ -188,7 +192,6 @@ python3 -m fake_quant_learnable.run_m1_onerec_ad \
   --output_dir fake_quant_learnable/results/baseline_w8a8_ad_smoke \
   --layers last:1 \
   --eval_sample_size 2 \
-  --eval_batch_size 1 \
   --num_beams 2 \
   --num_return_sequences 2 \
   --overwrite \
@@ -208,8 +211,6 @@ python3 -m fake_quant_learnable.run_m1_onerec_ad \
   --calib_offset 1000 \
   --eval_sample_size 2 \
   --eval_offset 0 \
-  --calib_batch_size 1 \
-  --eval_batch_size 1 \
   --steps 5 \
   --lr 1e-3 \
   --num_beams 2 \
@@ -231,8 +232,6 @@ python3 -m fake_quant_learnable.run_m1_onerec_ad \
   --calib_offset 1000 \
   --eval_sample_size 2 \
   --eval_offset 0 \
-  --calib_batch_size 1 \
-  --eval_batch_size 1 \
   --steps 5 \
   --lr 1e-3 \
   --num_beams 2 \
@@ -247,13 +246,33 @@ and eval set for all learnable modes. For example, compare `baseline_w8a8`,
 and `--num_beams 32`. Add the old `W+A+SmoothQuant` path as a stronger baseline
 when reporting LET results.
 
+## Current AD1000 Matched Results
+
+Matched `fake_quant_learnable` runs on May 27, 2026 used all 28 transformer
+layers, `act_quant=per_token`, `act_quant_mode=per_linear`,
+`calib_sample_size=128`, `calib_offset=1000`,
+`eval_sample_size=1000`, `eval_offset=0`, `steps=200`, `lr=1e-3`,
+`num_beams=32`, and `num_return_sequences=32`.
+
+| method | pass@1 | pass@16 | pass@32 | recall@1 | recall@16 | recall@32 | pid_pass@1 | pid_pass@16 | pid_pass@32 | pid_recall@1 | pid_recall@16 | pid_recall@32 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline_w8a8 | 0.019000 | 0.164000 | 0.233000 | 0.005891 | 0.057127 | 0.081563 | 0.016000 | 0.158000 | 0.220000 | 0.005369 | 0.054230 | 0.076784 |
+| m1_lwt | 0.020000 | 0.153000 | 0.216000 | 0.005901 | 0.054812 | 0.078157 | 0.018000 | 0.145000 | 0.207000 | 0.005508 | 0.051762 | 0.074029 |
+| m2_lwt_let | 0.024000 | 0.157000 | 0.224000 | 0.007194 | 0.055421 | 0.082351 | 0.022000 | 0.146000 | 0.212000 | 0.006815 | 0.052030 | 0.078189 |
+
+Summary: M1 improves top-1 slightly but hurts top-16/top-32 coverage versus
+`baseline_w8a8`. M2 is consistently better than M1 and improves recall-style
+metrics over `baseline_w8a8`, but its pass@16/pass@32 coverage remains lower.
+
 Outputs are written under:
 
 ```text
 <output_dir>/<model_name>/ad/test_generated.json
 <output_dir>/<model_name>/ad/m1_calibration.json, for --mode m1_lwt
+<output_dir>/<model_name>/ad/m2_let_calibration.json, for --mode m2_let
 <output_dir>/<model_name>/ad/m2_calibration.json, for --mode m2_lwt_let
 <output_dir>/<model_name>/ad/m1_lwt_learned_quant_params.pt, for --mode m1_lwt
+<output_dir>/<model_name>/ad/m2_let_learned_quant_params.pt, for --mode m2_let
 <output_dir>/<model_name>/ad/m2_lwt_let_learned_quant_params.pt, for --mode m2_lwt_let
 <output_dir>/<model_name>/ad/baseline_w8a8_config.json, for --mode baseline_w8a8
 <output_dir>/eval_results.json, when --evaluate is set
@@ -276,7 +295,8 @@ Notes:
 - `--layers last:1` is the safest first pass.
 - `--calib_only` writes the mode config without generation.
 - `--save_model_state` also saves the quantized model state dict, but this can be large.
-- Use the same `--act_quant` for baseline, M1, and M2 when comparing.
+- Use the same `--act_quant` and `--act_quant_mode` for baseline, M1, and M2 when comparing.
+- Current runner defaults to `ACT_QUANT_MODE=shared_input`, which quantizes q/k/v and gate/up shared inputs according to the actual module dataflow.
 - Learnable modes save lightweight LWT/LET parameters by default in `*_learned_quant_params.pt`; use `--no_save_quant_params` only for throwaway runs.
 - Reuse saved parameters with `--load_quant_params <path>`; this skips calibration and applies the saved frozen quantized wrappers before generation.
 - Use `--eval_sample_size 1000 --eval_offset 0` for ad1000 evaluation, and set `--calib_offset 1000` so calibration starts after the eval subset.

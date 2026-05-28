@@ -32,7 +32,7 @@ except ImportError:
     from ..smoothquant.collect_smooth_scales import slice_calibration_data
 
 
-DEFAULT_MODEL_PATH = "/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B"
+DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B/"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data"
 DEFAULT_OUTPUT_PATH = "fake_quant/ranking_margin/importances/onerec_ad_rank_importance_sample128.pt"
 SID_TOKEN_PATTERN = re.compile(r"<s_[abc]_\d+>")

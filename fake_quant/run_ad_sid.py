@@ -29,7 +29,7 @@ except ImportError:
     from fake_quant.apply import apply_fp8_fake_quant, apply_smoothquant_fp8_fake_quant
 
 
-DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B"
+DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B/"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data"
 
 

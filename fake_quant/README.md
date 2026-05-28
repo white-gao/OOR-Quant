@@ -5,7 +5,7 @@ This directory runs AD-domain SID prediction through HuggingFace/PyTorch rather 
 Default model paths can be overridden with `MODEL_PATH`. On this machine the common path is:
 
 ```bash
-/home/yhhuang/.cache/huggingface/hub/models--OpenOneRec--OneRec-1.7B/snapshots/OneRec-1.7B
+/home/guowei/OneRec-1.7B/
 ```
 
 ## Common Runs
