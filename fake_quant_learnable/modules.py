@@ -34,7 +34,8 @@ class BaselineFakeQuantLinear(nn.Module):
         self.act_quant = act_quant
         self.qmax = float(qmax)
         self.eps = float(eps)
-
+        
+        # 在初始化fakequant wrapper时，直接计算权重的量化-反量化结果，并注册为buffer，这样在前向过程中就不需要重复计算了
         with torch.no_grad():
             weight_qdq = fp8_weight_per_channel_forward(
                 linear.weight.detach(),
@@ -51,6 +52,7 @@ class BaselineFakeQuantLinear(nn.Module):
         return F.linear(x, self.weight_qdq, self.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 在forward过程中，如果act_quant是per_token，则对输入进行激活量化-反量化；如果是none，则直接使用原始输入。权重的量化-反量化结果已经在初始化时计算好了，直接使用即可。
         if self.act_quant == "per_token":
             x = activation_per_token_qdq_forward(x, qmax=self.qmax, eps=self.eps)
         return self.forward_prepared(x)
@@ -180,11 +182,10 @@ class LearnableFakeQuantLinear(nn.Module):
         scale = self.let_scale
         if scale is None:
             return self.weight_frozen
-        scaled = self.weight_frozen.float() * scale.to(
+        return self.weight_frozen * scale.to(
             device=self.weight_frozen.device,
-            dtype=torch.float32,
+            dtype=self.weight_frozen.dtype,
         ).view(1, -1)
-        return scaled.to(dtype=self.weight_frozen.dtype)
 
     def quantized_weight(self) -> torch.Tensor:
         return lwt_weight_qdq_ste(

@@ -14,7 +14,7 @@ from fake_quant_learnable.apply import (
     iter_learnable_lwt_modules,
     learnable_lwt_parameters,
 )
-from fake_quant_learnable.calibrate_m1_lwt import calibrate_block_mse
+from fake_quant_learnable.calibrate_m1_lwt import block_mse_loss, calibrate_block_mse
 from fake_quant_learnable.modules import (
     BaselineFakeQuantLinear,
     FrozenLearnedFakeQuantLinear,
@@ -194,6 +194,20 @@ def test_shared_input_mode_patches_qwen_like_mlp_and_runs() -> None:
     assert output.shape == (2, 4)
 
 
+def test_apply_learnable_lwt_omni_scope_includes_down_proj_let() -> None:
+    block = TinyQwen3MLPBlock()
+
+    summary = apply_learnable_lwt(block, act_quant="per_token", enable_let=True, let_scope="omni")
+
+    assert summary.replaced_linears == 3
+    assert block.mlp.gate_proj.log_let_scale is block.mlp.up_proj.log_let_scale
+    assert block.mlp.gate_proj.log_let_scale is not None
+    assert block.mlp.down_proj.log_let_scale is not None
+    assert block.mlp.down_proj.log_let_scale is not block.mlp.gate_proj.log_let_scale
+    assert len(list(learnable_lwt_parameters(block, include_lwt=True, include_let=False))) == 3
+    assert len(list(learnable_lwt_parameters(block, include_lwt=False, include_let=True))) == 2
+
+
 def test_apply_learnable_lwt_shares_known_let_input_groups() -> None:
     block = TinyQwenLikeBlock()
 
@@ -324,6 +338,20 @@ def test_lwt_parameters_get_gradient_without_training_raw_weight() -> None:
     assert not any(name == "weight" for name, _ in module.named_parameters())
 
 
+def test_block_mse_loss_uses_separate_target_and_quant_batches() -> None:
+    teacher = nn.Identity()
+    quant_block = nn.Identity()
+
+    loss = block_mse_loss(
+        teacher_block=teacher,
+        quant_block=quant_block,
+        target_batch=torch.ones(2, 3),
+        quant_batch=torch.full((2, 3), 2.0),
+    )
+
+    torch.testing.assert_close(loss, torch.tensor(1.0))
+
+
 def test_calibrate_block_mse_reduces_toy_block_reconstruction_loss() -> None:
     torch.manual_seed(1)
     teacher = TinyBlock().eval()
@@ -339,10 +367,10 @@ def test_calibrate_block_mse_reduces_toy_block_reconstruction_loss() -> None:
         teacher_block=teacher,
         quant_block=quant_block,
         batches=batches,
-        steps=25,
-        lr=0.05,
+        epochs=25,
+        lwt_lr=0.05,
     )
 
     assert history.initial_loss > 0
     assert history.final_loss < history.initial_loss
-    assert len(history.losses) == 25
+    assert len(history.losses) == 25 * len(batches)

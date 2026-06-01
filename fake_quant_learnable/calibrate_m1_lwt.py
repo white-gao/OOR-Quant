@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import cycle
 from typing import Any, Iterable, Mapping, Sequence
 
 import torch
@@ -11,6 +10,10 @@ from .apply import learnable_lwt_parameters
 
 
 Batch = torch.Tensor | Sequence[Any] | Mapping[str, Any]
+
+DEFAULT_LWT_LR = 3e-4
+DEFAULT_LET_LR = 6e-4
+DEFAULT_EPOCHS = 2
 
 
 @dataclass(frozen=True)
@@ -25,28 +28,44 @@ def calibrate_block_mse(
     teacher_block: nn.Module,
     quant_block: nn.Module,
     batches: Iterable[Batch],
-    steps: int = 200,
-    lr: float = 1e-3,
+    target_batches: Iterable[Batch] | None = None,
+    epochs: int = DEFAULT_EPOCHS,
+    lwt_lr: float = DEFAULT_LWT_LR,
+    let_lr: float = DEFAULT_LET_LR,
     eps: float = 1e-12,
     max_grad_norm: float | None = 1.0,
     train_lwt: bool = True,
     train_let: bool = True,
 ) -> CalibrationHistory:
-    """Optimize M1 LWT parameters with plain block-output reconstruction MSE."""
-    if steps <= 0:
-        raise ValueError(f"steps must be positive, got {steps}")
-    batch_list = list(batches)
-    if not batch_list:
+    """Optimize learnable LWT/LET parameters with block-output reconstruction MSE."""
+    if epochs <= 0:
+        raise ValueError(f"epochs must be positive, got {epochs}")
+    quant_batch_list = list(batches)
+    if not quant_batch_list:
         raise ValueError("batches must contain at least one calibration batch.")
+    target_batch_list = quant_batch_list if target_batches is None else list(target_batches)
+    if len(target_batch_list) != len(quant_batch_list):
+        raise ValueError(
+            "target_batches and batches must contain the same number of calibration batches: "
+            f"got {len(target_batch_list)} and {len(quant_batch_list)}."
+        )
 
     all_params = list(learnable_lwt_parameters(quant_block))
-    params = list(
+    lwt_params = list(
         learnable_lwt_parameters(
             quant_block,
             include_lwt=train_lwt,
+            include_let=False,
+        )
+    )
+    let_params = list(
+        learnable_lwt_parameters(
+            quant_block,
+            include_lwt=False,
             include_let=train_let,
         )
     )
+    params = _dedupe_parameters([*lwt_params, *let_params])
     if not params:
         raise ValueError("quant_block does not contain selected learnable quantization parameters.")
 
@@ -63,18 +82,29 @@ def calibrate_block_mse(
     initial_loss = evaluate_block_mse(
         teacher_block=teacher_block,
         quant_block=quant_block,
-        batches=batch_list,
+        batches=quant_batch_list,
+        target_batches=target_batch_list,
         eps=eps,
     )
 
-    optimizer = torch.optim.Adam(params, lr=lr)
+    param_groups = []
+    if lwt_params:
+        param_groups.append({"params": lwt_params, "lr": lwt_lr})
+    if let_params:
+        param_groups.append({"params": let_params, "lr": let_lr})
+    optimizer = torch.optim.Adam(param_groups)
     losses: list[float] = []
-    for batch, _ in zip(cycle(batch_list), range(steps)):
+    for target_batch, quant_batch in _iter_shuffled_epoch_batch_pairs(
+        target_batch_list,
+        quant_batch_list,
+        epochs,
+    ):
         optimizer.zero_grad(set_to_none=True)
         loss = block_mse_loss(
             teacher_block=teacher_block,
             quant_block=quant_block,
-            batch=batch,
+            target_batch=target_batch,
+            quant_batch=quant_batch,
             eps=eps,
         )
         loss.backward()
@@ -86,7 +116,8 @@ def calibrate_block_mse(
     final_loss = evaluate_block_mse(
         teacher_block=teacher_block,
         quant_block=quant_block,
-        batches=batch_list,
+        batches=quant_batch_list,
+        target_batches=target_batch_list,
         eps=eps,
     )
 
@@ -102,39 +133,92 @@ def calibrate_block_mse(
     )
 
 
+def _dedupe_parameters(params: Sequence[nn.Parameter]) -> list[nn.Parameter]:
+    deduped: list[nn.Parameter] = []
+    seen: set[int] = set()
+    for param in params:
+        param_id = id(param)
+        if param_id in seen:
+            continue
+        seen.add(param_id)
+        deduped.append(param)
+    return deduped
+
+
 def evaluate_block_mse(
     *,
     teacher_block: nn.Module,
     quant_block: nn.Module,
     batches: Iterable[Batch],
+    target_batches: Iterable[Batch] | None = None,
     eps: float = 1e-12,
 ) -> float:
+    quant_batch_list = list(batches)
+    if not quant_batch_list:
+        raise ValueError("batches must contain at least one calibration batch.")
+    target_batch_list = quant_batch_list if target_batches is None else list(target_batches)
+    if len(target_batch_list) != len(quant_batch_list):
+        raise ValueError(
+            "target_batches and batches must contain the same number of calibration batches: "
+            f"got {len(target_batch_list)} and {len(quant_batch_list)}."
+        )
+
     losses: list[float] = []
     with torch.no_grad():
-        for batch in batches:
+        for target_batch, quant_batch in zip(target_batch_list, quant_batch_list):
             loss = block_mse_loss(
                 teacher_block=teacher_block,
                 quant_block=quant_block,
-                batch=batch,
+                target_batch=target_batch,
+                quant_batch=quant_batch,
                 eps=eps,
             )
             losses.append(float(loss.detach().cpu()))
-    if not losses:
-        raise ValueError("batches must contain at least one calibration batch.")
     return sum(losses) / len(losses)
+
+
+def _iter_shuffled_epoch_batch_pairs(
+    target_batch_list: Sequence[Batch],
+    quant_batch_list: Sequence[Batch],
+    epochs: int,
+) -> Iterable[tuple[Batch, Batch]]:
+    """Yield paired FP-target and quant-input batches once per shuffled epoch."""
+    num_batches = len(quant_batch_list)
+    if num_batches <= 0:
+        raise ValueError("batch_list must contain at least one calibration batch.")
+    if len(target_batch_list) != num_batches:
+        raise ValueError(
+            "target_batch_list and quant_batch_list must contain the same number of batches: "
+            f"got {len(target_batch_list)} and {num_batches}."
+        )
+
+    for _ in range(epochs):
+        for idx in torch.randperm(num_batches).tolist():
+            yield target_batch_list[idx], quant_batch_list[idx]
 
 
 def block_mse_loss(
     *,
     teacher_block: nn.Module,
     quant_block: nn.Module,
-    batch: Batch,
+    batch: Batch | None = None,
+    target_batch: Batch | None = None,
+    quant_batch: Batch | None = None,
     eps: float = 1e-12,
 ) -> torch.Tensor:
-    args, kwargs = _batch_to_args_kwargs(batch)
+    if batch is not None:
+        if target_batch is not None or quant_batch is not None:
+            raise ValueError("Pass either batch or target_batch/quant_batch, not both.")
+        target_batch = batch
+        quant_batch = batch
+    if target_batch is None or quant_batch is None:
+        raise ValueError("target_batch and quant_batch must both be provided.")
+
+    target_args, target_kwargs = _batch_to_args_kwargs(target_batch)
+    quant_args, quant_kwargs = _batch_to_args_kwargs(quant_batch)
     with torch.no_grad():
-        target = _first_tensor(teacher_block(*args, **kwargs)).detach()
-    pred = _first_tensor(quant_block(*args, **kwargs))
+        target = _first_tensor(teacher_block(*target_args, **target_kwargs)).detach()
+    pred = _first_tensor(quant_block(*quant_args, **quant_kwargs))
     diff = (pred.float() - target.float()).pow(2).mean()
     denom = target.float().pow(2).mean().clamp_min(eps)
     return diff / denom

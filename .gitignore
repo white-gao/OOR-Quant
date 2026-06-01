@@ -90,3 +90,6 @@ fake_quant/probes/weight_probe/results/
 
 # papers
 PTQ_papers/
+
+# other repo
+third_party/

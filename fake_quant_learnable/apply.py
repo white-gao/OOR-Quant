@@ -3,13 +3,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MethodType
 import re
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Literal, Mapping
 
 import torch
 import torch.nn as nn
 
 from .modules import BaselineFakeQuantLinear, FrozenLearnedFakeQuantLinear, LearnableFakeQuantLinear
 from .quant import ActQuant, ActQuantMode, activation_per_token_qdq_forward, activation_per_token_qdq_ste
+
+
+SmoothScope = Literal["all", "omni"]
+OMNI_SMOOTH_LINEAR_LEAF_NAMES = frozenset(
+    {
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -74,9 +88,11 @@ def apply_learnable_lwt(
     min_clip_multiplier: float = 0.05,
     max_clip_multiplier: float = 4.0,
     enable_let: bool = False,
+    let_scope: SmoothScope = "all",
 ) -> LearnableLWTSummary:
     """Replace selected nn.Linear modules with learnable LWT/LET wrappers."""
     _validate_act_quant_mode(act_quant=act_quant, act_quant_mode=act_quant_mode)
+    _validate_smooth_scope(let_scope)
     skip_names = set(skip_module_names)
     target_pattern = re.compile(target_regex) if target_regex else None
     skip_pattern = re.compile(skip_regex) if skip_regex else None
@@ -91,6 +107,7 @@ def apply_learnable_lwt(
         min_clip_multiplier=min_clip_multiplier,
         max_clip_multiplier=max_clip_multiplier,
         enable_let=enable_let,
+        let_scope=let_scope,
     )
     if enable_let:
         _share_known_let_input_groups(model)
@@ -160,6 +177,21 @@ def _validate_act_quant_mode(*, act_quant: ActQuant, act_quant_mode: ActQuantMod
         raise ValueError(f"Unsupported act_quant_mode: {act_quant_mode}")
     if act_quant == "none" and act_quant_mode != "per_linear":
         raise ValueError("act_quant_mode is only meaningful when activation quantization is enabled.")
+
+
+def _validate_smooth_scope(scope: str) -> None:
+    if scope not in ("all", "omni"):
+        raise ValueError(f"Unsupported smooth scope: {scope!r}")
+
+
+def should_apply_smooth_transform(full_name: str, scope: SmoothScope) -> bool:
+    """Return whether LET/SmoothQuant should use an equivalent-transform scale."""
+    _validate_smooth_scope(scope)
+    if scope == "all":
+        return True
+    if full_name == "":
+        return True
+    return full_name.rsplit(".", 1)[-1] in OMNI_SMOOTH_LINEAR_LEAF_NAMES
 
 
 def set_learnable_lwt_quant_enabled(model: nn.Module, enabled: bool) -> None:
@@ -247,10 +279,10 @@ def _replace_children_baseline(
             ):
                 skipped += 1
                 continue
-            setattr(module, child_name, BaselineFakeQuantLinear(child, act_quant=act_quant))
+            setattr(module, child_name, BaselineFakeQuantLinear(child, act_quant=act_quant)) # 将nn.linear替换为BaselineFakeQuantLinear
             replaced += 1
             continue
-
+        # 这里迭代所有子模块，进行替换，例如attn -> attn.q_proj, attn.k_proj, attn.v_proj
         child_replaced, child_skipped = _replace_children_baseline(
             child,
             prefix=full_name,
@@ -277,6 +309,7 @@ def _replace_children_learnable(
     min_clip_multiplier: float,
     max_clip_multiplier: float,
     enable_let: bool,
+    let_scope: SmoothScope,
 ) -> tuple[int, int]:
     replaced = 0
     skipped = 0
@@ -306,7 +339,7 @@ def _replace_children_learnable(
                     init_clip_multiplier=init_clip_multiplier,
                     min_clip_multiplier=min_clip_multiplier,
                     max_clip_multiplier=max_clip_multiplier,
-                    enable_let=enable_let,
+                    enable_let=enable_let and should_apply_smooth_transform(full_name, let_scope),
                 ),
             )
             replaced += 1
@@ -323,6 +356,7 @@ def _replace_children_learnable(
             min_clip_multiplier=min_clip_multiplier,
             max_clip_multiplier=max_clip_multiplier,
             enable_let=enable_let,
+            let_scope=let_scope,
         )
         replaced += child_replaced
         skipped += child_skipped

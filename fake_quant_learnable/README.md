@@ -300,3 +300,29 @@ Notes:
 - Learnable modes save lightweight LWT/LET parameters by default in `*_learned_quant_params.pt`; use `--no_save_quant_params` only for throwaway runs.
 - Reuse saved parameters with `--load_quant_params <path>`; this skips calibration and applies the saved frozen quantized wrappers before generation.
 - Use `--eval_sample_size 1000 --eval_offset 0` for ad1000 evaluation, and set `--calib_offset 1000` so calibration starts after the eval subset.
+
+
+  MODE=m2_lwt_let \
+  MODEL_PATH=/home/guowei/OneRec-1.7B/ \
+  MODEL_NAME=OneRec-1.7B-m2-lwt-let-calib1024-normal \
+  DATA_DIR=data/onerec_data/benchmark-data-calib1024 \
+  CALIB_SPLIT=calib \
+  CALIB_SAMPLE_SIZE=1024 \
+  CALIB_OFFSET=0 \
+  EVAL_SAMPLE_SIZE=full \
+  EVAL_OFFSET=0 \
+  LAYERS=all \
+  ACT_QUANT=per_token \
+  ACT_QUANT_MODE=shared_input \
+  STEPS=2048 \
+  LR=3e-4 \
+  DEVICE=cuda:6 \
+  NUM_BEAMS=32 \
+  NUM_RETURN_SEQUENCES=32 \
+  MAX_NEW_TOKENS=3 \
+  RUN_NAME=m2_lwt_let_1p7b_ad_calib1024_normal_steps2048_lr3e-4_full \
+  OUTPUT_DIR=fake_quant_learnable/results/m2_lwt_let_1p7b_ad_calib1024_normal_steps2048_lr3e-4_full \
+  OVERWRITE=1 \
+  EVALUATE=1 \
+  SAVE_QUANT_PARAMS=1 \
+  bash fake_quant_learnable/run_learnable_quant_ad.sh

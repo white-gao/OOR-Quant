@@ -7,7 +7,7 @@ set -euo pipefail
 MODEL_8B_PATH="${MODEL_8B_PATH:-/home/guowei/OneRec-8B/}"
 MODEL_1P7B_PATH="${MODEL_1P7B_PATH:-/home/guowei/OneRec-1.7B/}"
 DEVICE_8B="${DEVICE_8B:-cuda:0}"
-DEVICE_1P7B="${DEVICE_1P7B:-cuda:1}"
+DEVICE_1P7B="${DEVICE_1P7B:-cuda:6}"
 DATA_DIR="${DATA_DIR:-data/onerec_data/benchmark-data-calib1024}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-fake_quant_learnable/results}"
 LAYERS="${LAYERS:-all}"
@@ -22,7 +22,7 @@ MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-3}"
 SEED="${SEED:-42}"
 EVALUATE="${EVALUATE:-1}"
 OVERWRITE="${OVERWRITE:-1}"
-RUN_8B="${RUN_8B:-1}"
+RUN_8B="${RUN_8B:-0}"
 RUN_1P7B="${RUN_1P7B:-1}"
 
 run_w8a8() {
