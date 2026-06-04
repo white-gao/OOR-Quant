@@ -4,8 +4,10 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -13,6 +15,7 @@ from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -25,7 +28,6 @@ from .apply import (
     freeze_learnable_lwt,
     install_shared_input_activation_quantization,
     learned_quantized_module_from_params,
-    should_apply_smooth_transform,
 )
 from .calibrate_m1_lwt import (
     DEFAULT_EPOCHS,
@@ -37,9 +39,21 @@ from .calibrate_m1_lwt import (
     _first_tensor,
     calibrate_block_mse,
 )
-from .modules import BaselineFakeQuantLinear, FrozenLearnedFakeQuantLinear, LearnableFakeQuantLinear
-from .quant import ActQuant, ActQuantMode, fp8_weight_per_channel_forward
-from fake_quant.smoothquant.core import compute_smooth_scale, smooth_linear_weight
+from .modules import BaselineFakeQuantLinear, LearnableFakeQuantLinear
+from .quant import ActQuant, ActQuantMode
+from .runtime_utils import _detach_tree, _module_device, _move_tree_to_device
+from .smoothquant_runtime import (
+    DEFAULT_SMOOTHQUANT_ALPHA,
+    DEFAULT_SMOOTHQUANT_MAX_SCALE,
+    DEFAULT_SMOOTHQUANT_MIN_SCALE,
+    DEFAULT_SMOOTH_FOLD,
+    DEFAULT_SMOOTH_SCOPE,
+    apply_smoothquant_scales_to_learnable,
+    collect_smoothquant_scales,
+    fold_frozen_let_scales_inplace,
+    fold_smoothquant_scales_inplace,
+    smoothquant_quantized_module_from_scales,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -54,95 +68,79 @@ from benchmark.tasks.v1_0.registry import get_loader, get_task_config  # noqa: E
 
 DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B/"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data-calib1024"
-DEFAULT_SMOOTHQUANT_ALPHA = 0.5
-DEFAULT_SMOOTHQUANT_MIN_SCALE = None
-DEFAULT_SMOOTHQUANT_MAX_SCALE = None
-DEFAULT_SMOOTH_SCOPE: SmoothScope = "omni"
-
-
-def parse_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    value_str = str(value).strip().lower()
-    if value_str in {"1", "true", "yes", "y", "on"}:
-        return True
-    if value_str in {"0", "false", "no", "n", "off"}:
-        return False
-    raise argparse.ArgumentTypeError(f"Expected boolean value, got {value!r}.")
-
+DEFAULT_OUTPUT_DIR = "fake_quant_learnable/results/ptq_ad"
+DEFAULT_SPLIT = "test"
+DEFAULT_CALIB_OFFSET = 0
+DEFAULT_EVAL_OFFSET = 0
+DEFAULT_ACT_QUANT: ActQuant = "per_token"
+DEFAULT_ACT_QUANT_MODE: ActQuantMode = "shared_input"
+DEFAULT_DTYPE = "bfloat16"
+DEFAULT_NUM_BEAMS = 32
+DEFAULT_NUM_RETURN_SEQUENCES = 32
+DEFAULT_MAX_NEW_TOKENS = 3
+DEFAULT_SEED = 42
+DEFAULT_INIT_CLIP_MULTIPLIER = 1.0
+DEFAULT_SID_PPL_MAX_ITEMS = 1
+SID_ITEM_RE = re.compile(
+    r"<\|sid_begin\|>"
+    r"(?P<sid><s_a_[^>]+><s_b_[^>]+><s_c_[^>]+>)"
+    r"<\|sid_end\|>"
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run OneRec AD evaluation with baseline, M1 LWT, M2 LET-only, or M2 LWT+LET FP8 W+A fake quantization."
+        description="Run OneRec AD evaluation with compact FP8 W+A quantization defaults."
     )
-    parser.add_argument("--model_path", default=DEFAULT_MODEL_PATH)
-    parser.add_argument("--model_name", default=None)
-    parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
-    parser.add_argument("--calib_data_dir", default=None)
-    parser.add_argument("--eval_data_dir", default=None)
-    parser.add_argument("--output_dir", default="fake_quant_learnable/results/ptq_ad")
     parser.add_argument("--mode", default="m2_lwt_let", choices=["baseline_w8a8", "smoothquant_w8a8", "m1_lwt", "m2_let", "m2_lwt_let"])
-    parser.add_argument("--split", default="test", choices=["test"])
-    parser.add_argument("--calib_split", default=None, choices=["test", "calib"])
-    parser.add_argument("--calib_sample_size", default="1024")
-    parser.add_argument("--calib_offset", type=int, default=0)
-    parser.add_argument("--eval_sample_size", default="full")
-    parser.add_argument("--eval_offset", type=int, default=0)
+    parser.add_argument("--model_path", default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
+    parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--layers", default="all", help='Layer spec: "all", "last:K", "0,2-4".')
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--calib_sample_size", default="1024")
+    parser.add_argument("--eval_sample_size", default="full")
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
-    parser.add_argument("--lwt_lr", type=float, default=DEFAULT_LWT_LR, help="Learning rate for LWT clipping parameters.")
-    parser.add_argument("--let_lr", type=float, default=DEFAULT_LET_LR, help="Learning rate for LET scale parameters.")
-    parser.add_argument("--let_init", default="ones", choices=["ones", "smoothquant"], help="Initialization for LET scale parameters.")
-    parser.add_argument("--smoothquant_alpha", type=float, default=DEFAULT_SMOOTHQUANT_ALPHA)
-    parser.add_argument(
-        "--smooth_scope",
-        default=DEFAULT_SMOOTH_SCOPE,
-        choices=["all", "omni"],
-        help="all smooths every Linear; omni smooths q/k/v, o_proj, and gate/up/down.",
-    )
-    parser.add_argument(
-        "--smooth_fold",
-        type=parse_bool,
-        default=True,
-        help="Fold SmoothQuant/LET activation scaling into adjacent modules when the transform is exact.",
-    )
-    parser.add_argument(
-        "--smoothquant_min_scale",
-        type=float,
-        default=DEFAULT_SMOOTHQUANT_MIN_SCALE,
-        help="Optional SmoothQuant scale lower clamp. Omit to match fake_quant SmoothQuant.",
-    )
-    parser.add_argument(
-        "--smoothquant_max_scale",
-        type=float,
-        default=DEFAULT_SMOOTHQUANT_MAX_SCALE,
-        help="Optional SmoothQuant scale upper clamp. Omit to match fake_quant SmoothQuant.",
-    )
-    parser.add_argument("--init_clip_multiplier", type=float, default=1.0)
-    parser.add_argument("--act_quant", default="per_token", choices=["none", "per_token"])
-    parser.add_argument(
-        "--act_quant_mode",
-        default="shared_input",
-        choices=["per_linear", "shared_input"],
-        help="per_linear quantizes each Linear input independently; shared_input reuses qkv/gate-up activation QDQ.",
-    )
-    parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
-    parser.add_argument("--device", default="cuda:3")
-    parser.add_argument("--device_map", default=None)
-    parser.add_argument("--num_beams", type=int, default=32)
-    parser.add_argument("--num_return_sequences", type=int, default=32)
-    parser.add_argument("--max_new_tokens", type=int, default=3)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--lwt_lr", type=float, default=DEFAULT_LWT_LR)
+    parser.add_argument("--let_lr", type=float, default=DEFAULT_LET_LR)
+    parser.add_argument("--let_init", default="ones", choices=["ones", "smoothquant"])
+    parser.add_argument("--load_quant_params", default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--evaluate", action="store_true")
     parser.add_argument("--calib_only", action="store_true")
-    parser.add_argument("--save_model_state", action="store_true")
-    parser.add_argument("--save_quant_params", dest="save_quant_params", action="store_true", default=True)
-    parser.add_argument("--no_save_quant_params", dest="save_quant_params", action="store_false")
-    parser.add_argument("--load_quant_params", default=None)
-    parser.add_argument("--skip_calibration", action="store_true")
-    return parser.parse_args()
+    parser.add_argument(
+        "--compute_sid_ppl",
+        action="store_true",
+        help="Compute auxiliary teacher-forcing NLL/PPL on ground-truth SID tokens.",
+    )
+    parser.add_argument(
+        "--sid_ppl_max_items",
+        type=int,
+        default=DEFAULT_SID_PPL_MAX_ITEMS,
+        help="Maximum ground-truth SID items per sample for teacher-forcing NLL/PPL.",
+    )
+    args = parser.parse_args()
+    _attach_fixed_defaults(args)
+    return args
+
+
+def _attach_fixed_defaults(args: argparse.Namespace) -> None:
+    args.split = DEFAULT_SPLIT
+    args.calib_offset = DEFAULT_CALIB_OFFSET
+    args.eval_offset = DEFAULT_EVAL_OFFSET
+    args.act_quant = DEFAULT_ACT_QUANT
+    args.act_quant_mode = DEFAULT_ACT_QUANT_MODE
+    args.dtype = DEFAULT_DTYPE
+    args.num_beams = DEFAULT_NUM_BEAMS
+    args.num_return_sequences = DEFAULT_NUM_RETURN_SEQUENCES
+    args.max_new_tokens = DEFAULT_MAX_NEW_TOKENS
+    args.seed = DEFAULT_SEED
+    args.init_clip_multiplier = DEFAULT_INIT_CLIP_MULTIPLIER
+    args.smoothquant_alpha = DEFAULT_SMOOTHQUANT_ALPHA
+    args.smooth_scope = DEFAULT_SMOOTH_SCOPE
+    args.smooth_fold = DEFAULT_SMOOTH_FOLD
+    args.smoothquant_min_scale = DEFAULT_SMOOTHQUANT_MIN_SCALE
+    args.smoothquant_max_scale = DEFAULT_SMOOTHQUANT_MAX_SCALE
 
 
 def dtype_from_name(name: str) -> torch.dtype:
@@ -353,498 +351,6 @@ def advance_layer_input_batches(
     finally:
         layer.train(was_training)
     return advanced
-
-
-def collect_smoothquant_scales(
-    module: nn.Module,
-    batches: Sequence[Batch],
-    *,
-    alpha: float = DEFAULT_SMOOTHQUANT_ALPHA,
-    min_scale: float | None = DEFAULT_SMOOTHQUANT_MIN_SCALE,
-    max_scale: float | None = DEFAULT_SMOOTHQUANT_MAX_SCALE,
-    smooth_scope: SmoothScope = DEFAULT_SMOOTH_SCOPE,
-    eps: float = 1e-12,
-) -> dict[str, torch.Tensor]:
-    if not 0.0 <= alpha <= 1.0:
-        raise ValueError(f"smoothquant alpha must be in [0, 1], got {alpha}")
-    linear_modules = {
-        name: child
-        for name, child in module.named_modules()
-        if isinstance(child, nn.Linear) and should_apply_smooth_transform(name, smooth_scope)
-    }
-    if isinstance(module, nn.Linear):
-        linear_modules = {"": module}
-    if not linear_modules:
-        return {}
-
-    act_absmax = _collect_linear_input_absmax(module, batches, linear_modules)
-    scales: dict[str, torch.Tensor] = {}
-    grouped: set[str] = set()
-    for group in _known_smoothquant_input_group_names(linear_modules):
-        members = [name for name in group if name in act_absmax]
-        if len(members) != len(group):
-            continue
-        act_max = torch.stack([act_absmax[name].float().cpu() for name in members]).amax(dim=0)
-        weight_max = torch.stack([
-            _linear_input_weight_absmax(linear_modules[name], eps=eps).cpu()
-            for name in members
-        ]).amax(dim=0)
-        scale = _smoothquant_scale(
-            act_max,
-            weight_max,
-            alpha=alpha,
-            min_scale=min_scale,
-            max_scale=max_scale,
-            eps=eps,
-        )
-        for name in members:
-            scales[name] = scale.clone()
-            grouped.add(name)
-
-    for name, linear in linear_modules.items():
-        if name in grouped or name not in act_absmax:
-            continue
-        scales[name] = _smoothquant_scale(
-            act_absmax[name].float().cpu(),
-            _linear_input_weight_absmax(linear, eps=eps).cpu(),
-            alpha=alpha,
-            min_scale=min_scale,
-            max_scale=max_scale,
-            eps=eps,
-        )
-    return scales
-
-
-def _collect_linear_input_absmax(
-    module: nn.Module,
-    batches: Sequence[Batch],
-    linear_modules: Mapping[str, nn.Linear],
-) -> dict[str, torch.Tensor]:
-    stats: dict[str, torch.Tensor] = {}
-    handles = []
-
-    def make_hook(name: str, linear: nn.Linear):
-        def hook(_module: nn.Module, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-            if args:
-                x = args[0]
-            else:
-                x = kwargs.get("input", kwargs.get("hidden_states"))
-            if not torch.is_tensor(x):
-                return
-            if x.shape[-1] != linear.in_features:
-                raise ValueError(
-                    f"Expected input last dim {linear.in_features} for {name!r}, got {tuple(x.shape)}"
-                )
-            reduce_dims = tuple(range(x.ndim - 1))
-            current = x.detach().float().abs()
-            current = current.amax(dim=reduce_dims) if reduce_dims else current
-            previous = stats.get(name)
-            stats[name] = current.cpu() if previous is None else torch.maximum(previous, current.cpu())
-        return hook
-
-    for name, linear in linear_modules.items():
-        handles.append(linear.register_forward_pre_hook(make_hook(name, linear), with_kwargs=True))
-
-    was_training = module.training
-    target_device = _module_device(module)
-    module.eval()
-    try:
-        with torch.no_grad():
-            for batch in batches:
-                args, kwargs = _batch_to_args_kwargs(batch)
-                args = _move_tree_to_device(args, target_device)
-                kwargs = _move_tree_to_device(kwargs, target_device)
-                module(*args, **kwargs)
-    finally:
-        for handle in handles:
-            handle.remove()
-        module.train(was_training)
-    return stats
-
-
-def _linear_input_weight_absmax(linear: nn.Linear, *, eps: float = 1e-12) -> torch.Tensor:
-    return linear.weight.detach().float().abs().amax(dim=0).clamp_min(eps)
-
-
-def _smoothquant_scale(
-    act_absmax: torch.Tensor,
-    weight_absmax: torch.Tensor,
-    *,
-    alpha: float,
-    min_scale: float | None,
-    max_scale: float | None,
-    eps: float = 1e-12,
-) -> torch.Tensor:
-    scale = compute_smooth_scale(act_absmax, weight_absmax, alpha=alpha, eps=eps)
-    if min_scale is not None:
-        scale = scale.clamp_min(float(min_scale))
-    if max_scale is not None:
-        scale = scale.clamp_max(float(max_scale))
-    return scale
-
-
-def _known_smoothquant_input_group_names(modules: Mapping[str, nn.Module]) -> list[tuple[str, ...]]:
-    groups: list[tuple[str, ...]] = []
-    for name in sorted(modules):
-        if name.endswith(".q_proj"):
-            prefix = name[: -len(".q_proj")]
-            group = (f"{prefix}.q_proj", f"{prefix}.k_proj", f"{prefix}.v_proj")
-            if all(member in modules for member in group):
-                groups.append(group)
-        elif name.endswith(".gate_proj"):
-            prefix = name[: -len(".gate_proj")]
-            group = (f"{prefix}.gate_proj", f"{prefix}.up_proj")
-            if all(member in modules for member in group):
-                groups.append(group)
-    return groups
-
-
-def apply_smoothquant_scales_to_learnable(
-    module: nn.Module,
-    scales: Mapping[str, torch.Tensor],
-) -> int:
-    applied = 0
-    modules = dict(module.named_modules())
-    if isinstance(module, LearnableFakeQuantLinear):
-        modules = {"": module}
-    for name, scale in scales.items():
-        target = modules.get(name)
-        if not isinstance(target, LearnableFakeQuantLinear) or target.log_let_scale is None:
-            continue
-        scale_tensor = scale.to(device=target.log_let_scale.device, dtype=target.log_let_scale.dtype).reshape_as(
-            target.log_let_scale
-        )
-        scale_tensor = scale_tensor.clamp(min=target.min_let_scale, max=target.max_let_scale)
-        with torch.no_grad():
-            target.log_let_scale.copy_(torch.log(scale_tensor))
-        applied += 1
-    return applied
-
-
-def smoothquant_quantized_module_from_scales(
-    module: nn.Module,
-    scales: Mapping[str, torch.Tensor],
-    *,
-    act_quant: ActQuant,
-    smooth_scope: SmoothScope = DEFAULT_SMOOTH_SCOPE,
-    folded_names: set[str] | None = None,
-) -> tuple[nn.Module, int]:
-    if isinstance(module, nn.Linear):
-        scale = scales.get("")
-        if scale is None:
-            raise ValueError("Missing SmoothQuant scale for root Linear module.")
-        return _smoothquant_frozen_linear(module, scale, act_quant=act_quant), 1
-    return module, _replace_children_smoothquant(
-        module,
-        scales=scales,
-        prefix="",
-        act_quant=act_quant,
-        smooth_scope=smooth_scope,
-        folded_names=folded_names or set(),
-    )
-
-
-def _replace_children_smoothquant(
-    module: nn.Module,
-    *,
-    scales: Mapping[str, torch.Tensor],
-    prefix: str,
-    act_quant: ActQuant,
-    smooth_scope: SmoothScope,
-    folded_names: set[str],
-) -> int:
-    replaced = 0
-    for child_name, child in list(module.named_children()):
-        full_name = f"{prefix}.{child_name}" if prefix else child_name
-        if isinstance(child, nn.Linear):
-            if should_apply_smooth_transform(full_name, smooth_scope):
-                scale = scales.get(full_name)
-                if scale is None:
-                    raise KeyError(f"Missing SmoothQuant scale for Linear module: {full_name}")
-                replacement = _smoothquant_frozen_linear(
-                    child,
-                    scale,
-                    act_quant=act_quant,
-                    fold_activation=full_name in folded_names,
-                )
-            else:
-                replacement = BaselineFakeQuantLinear(child, act_quant=act_quant)
-            setattr(module, child_name, replacement)
-            replaced += 1
-            continue
-        replaced += _replace_children_smoothquant(
-            child,
-            scales=scales,
-            prefix=full_name,
-            act_quant=act_quant,
-            smooth_scope=smooth_scope,
-            folded_names=folded_names,
-        )
-    return replaced
-
-
-def _smoothquant_frozen_linear(
-    linear: nn.Linear,
-    scale: torch.Tensor,
-    *,
-    act_quant: ActQuant,
-    fold_activation: bool = False,
-) -> FrozenLearnedFakeQuantLinear:
-    scale = scale.detach().float().reshape(-1).to(device=linear.weight.device)
-    if scale.numel() != linear.in_features:
-        raise ValueError(f"Expected SmoothQuant scale shape ({linear.in_features},), got {tuple(scale.shape)}")
-    with torch.no_grad():
-        scaled_weight = linear.weight.detach() if fold_activation else smooth_linear_weight(linear.weight.detach(), scale)
-        weight_qdq = fp8_weight_per_channel_forward(scaled_weight)
-        bias = None if linear.bias is None else linear.bias.detach().clone()
-        let_scale = None if fold_activation else scale.detach().cpu()
-    return FrozenLearnedFakeQuantLinear(
-        weight_qdq=weight_qdq,
-        bias=bias,
-        act_quant=act_quant,
-        let_scale=let_scale,
-    )
-
-
-
-def fold_smoothquant_scales_inplace(
-    module: nn.Module,
-    scales: Mapping[str, torch.Tensor],
-    *,
-    smooth_scope: SmoothScope = DEFAULT_SMOOTH_SCOPE,
-) -> set[str]:
-    """Fold explicit SmoothQuant activation scaling into adjacent FP modules where exact."""
-    folded: set[str] = set()
-    if smooth_scope != "omni":
-        return folded
-    folded.update(
-        _fold_norm_to_linear_input_group(
-            module,
-            norm_name="input_layernorm",
-            linear_names=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"),
-            scales=scales,
-        )
-    )
-    folded.update(
-        _fold_norm_to_linear_input_group(
-            module,
-            norm_name="post_attention_layernorm",
-            linear_names=("mlp.gate_proj", "mlp.up_proj"),
-            scales=scales,
-        )
-    )
-    if _fold_linear_output_to_linear_input(
-        module,
-        source_name="self_attn.v_proj",
-        target_name="self_attn.o_proj",
-        scales=scales,
-    ):
-        folded.add("self_attn.o_proj")
-    if _fold_linear_output_to_linear_input(
-        module,
-        source_name="mlp.up_proj",
-        target_name="mlp.down_proj",
-        scales=scales,
-    ):
-        folded.add("mlp.down_proj")
-    return folded
-
-
-def fold_frozen_let_scales_inplace(
-    module: nn.Module,
-    *,
-    smooth_scope: SmoothScope = DEFAULT_SMOOTH_SCOPE,
-) -> set[str]:
-    """Fold frozen LET activation scales into adjacent modules after calibration."""
-    folded: set[str] = set()
-    if smooth_scope != "omni":
-        return folded
-    folded.update(
-        _fold_norm_to_frozen_input_group(
-            module,
-            norm_name="input_layernorm",
-            linear_names=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"),
-        )
-    )
-    folded.update(
-        _fold_norm_to_frozen_input_group(
-            module,
-            norm_name="post_attention_layernorm",
-            linear_names=("mlp.gate_proj", "mlp.up_proj"),
-        )
-    )
-    if _fold_frozen_output_to_frozen_input(
-        module,
-        source_name="self_attn.v_proj",
-        target_name="self_attn.o_proj",
-    ):
-        folded.add("self_attn.o_proj")
-    if _fold_frozen_output_to_frozen_input(
-        module,
-        source_name="mlp.up_proj",
-        target_name="mlp.down_proj",
-    ):
-        folded.add("mlp.down_proj")
-    return folded
-
-
-def _fold_norm_to_linear_input_group(
-    module: nn.Module,
-    *,
-    norm_name: str,
-    linear_names: Sequence[str],
-    scales: Mapping[str, torch.Tensor],
-) -> set[str]:
-    norm = _maybe_get_submodule(module, norm_name)
-    if norm is None or not hasattr(norm, "weight"):
-        return set()
-    scale = _shared_scale_from_mapping(scales, linear_names)
-    if scale is None:
-        return set()
-    linears = [_maybe_get_submodule(module, name) for name in linear_names]
-    if not all(isinstance(linear, nn.Linear) for linear in linears):
-        return set()
-    if not _scale_matches_norm_and_linear_inputs(scale, norm, linears):
-        return set()
-
-    with torch.no_grad():
-        _divide_weight_or_bias(norm, "weight", scale)
-        _divide_weight_or_bias(norm, "bias", scale)
-        for linear in linears:
-            assert isinstance(linear, nn.Linear)
-            linear.weight.mul_(scale.to(device=linear.weight.device, dtype=linear.weight.dtype).view(1, -1))
-    return set(linear_names)
-
-
-def _fold_linear_output_to_linear_input(
-    module: nn.Module,
-    *,
-    source_name: str,
-    target_name: str,
-    scales: Mapping[str, torch.Tensor],
-) -> bool:
-    source = _maybe_get_submodule(module, source_name)
-    target = _maybe_get_submodule(module, target_name)
-    scale = scales.get(target_name)
-    if not isinstance(source, nn.Linear) or not isinstance(target, nn.Linear) or scale is None:
-        return False
-    scale = scale.detach().float().reshape(-1)
-    if source.out_features != target.in_features or scale.numel() != target.in_features:
-        return False
-
-    with torch.no_grad():
-        source.weight.div_(scale.to(device=source.weight.device, dtype=source.weight.dtype).view(-1, 1))
-        if source.bias is not None:
-            source.bias.div_(scale.to(device=source.bias.device, dtype=source.bias.dtype))
-        target.weight.mul_(scale.to(device=target.weight.device, dtype=target.weight.dtype).view(1, -1))
-    return True
-
-
-def _fold_norm_to_frozen_input_group(
-    module: nn.Module,
-    *,
-    norm_name: str,
-    linear_names: Sequence[str],
-) -> set[str]:
-    norm = _maybe_get_submodule(module, norm_name)
-    if norm is None or not hasattr(norm, "weight"):
-        return set()
-    linears = [_maybe_get_submodule(module, name) for name in linear_names]
-    if not all(isinstance(linear, FrozenLearnedFakeQuantLinear) for linear in linears):
-        return set()
-    scale = _shared_scale_from_frozen_linears(linears)
-    if scale is None or not _scale_matches_norm_and_linear_inputs(scale, norm, linears):
-        return set()
-
-    with torch.no_grad():
-        _divide_weight_or_bias(norm, "weight", scale)
-        _divide_weight_or_bias(norm, "bias", scale)
-    for linear in linears:
-        assert isinstance(linear, FrozenLearnedFakeQuantLinear)
-        linear.let_scale = None
-    return set(linear_names)
-
-
-def _fold_frozen_output_to_frozen_input(
-    module: nn.Module,
-    *,
-    source_name: str,
-    target_name: str,
-) -> bool:
-    source = _maybe_get_submodule(module, source_name)
-    target = _maybe_get_submodule(module, target_name)
-    if not isinstance(source, FrozenLearnedFakeQuantLinear) or not isinstance(target, FrozenLearnedFakeQuantLinear):
-        return False
-    if target.let_scale is None:
-        return False
-    scale = target.let_scale.detach().float().reshape(-1)
-    if source.out_features != target.in_features or scale.numel() != target.in_features:
-        return False
-
-    with torch.no_grad():
-        source.weight_qdq.div_(scale.to(device=source.weight_qdq.device, dtype=source.weight_qdq.dtype).view(-1, 1))
-        if source.bias is not None:
-            source.bias.div_(scale.to(device=source.bias.device, dtype=source.bias.dtype))
-    target.let_scale = None
-    return True
-
-
-def _shared_scale_from_mapping(
-    scales: Mapping[str, torch.Tensor],
-    names: Sequence[str],
-) -> torch.Tensor | None:
-    tensors = [scales.get(name) for name in names]
-    if any(tensor is None for tensor in tensors):
-        return None
-    scale = tensors[0].detach().float().reshape(-1)
-    for tensor in tensors[1:]:
-        other = tensor.detach().float().reshape(-1)
-        if scale.shape != other.shape or not torch.allclose(scale, other, rtol=1e-4, atol=1e-6):
-            return None
-    return scale
-
-
-def _shared_scale_from_frozen_linears(modules: Sequence[nn.Module | None]) -> torch.Tensor | None:
-    scales = []
-    for module in modules:
-        if not isinstance(module, FrozenLearnedFakeQuantLinear) or module.let_scale is None:
-            return None
-        scales.append(module.let_scale.detach().float().reshape(-1))
-    scale = scales[0]
-    for other in scales[1:]:
-        if scale.shape != other.shape or not torch.allclose(scale, other, rtol=1e-4, atol=1e-6):
-            return None
-    return scale
-
-
-def _scale_matches_norm_and_linear_inputs(
-    scale: torch.Tensor,
-    norm: nn.Module,
-    linears: Sequence[nn.Module | None],
-) -> bool:
-    weight = getattr(norm, "weight", None)
-    if not torch.is_tensor(weight) or scale.numel() != weight.numel():
-        return False
-    for linear in linears:
-        in_features = getattr(linear, "in_features", None)
-        if in_features != scale.numel():
-            return False
-    return True
-
-
-def _divide_weight_or_bias(module: nn.Module, attr_name: str, scale: torch.Tensor) -> None:
-    value = getattr(module, attr_name, None)
-    if not torch.is_tensor(value):
-        return
-    value.div_(scale.to(device=value.device, dtype=value.dtype).reshape_as(value))
-
-
-def _maybe_get_submodule(module: nn.Module, name: str) -> nn.Module | None:
-    try:
-        return module.get_submodule(name)
-    except AttributeError:
-        return None
-
 
 
 def calibrate_model_layers_m1(
@@ -1178,6 +684,139 @@ def generate_one(
     return decode_generations(tokenizer, output.detach().cpu(), prompt_len)
 
 
+def extract_sid_teacher_forcing_targets(ground_truth: str, *, max_items: int) -> list[str]:
+    """Return SID target triples without the surrounding sid_begin/sid_end tokens."""
+    if max_items <= 0:
+        return []
+    targets: list[str] = []
+    for match in SID_ITEM_RE.finditer(ground_truth or ""):
+        targets.append(match.group("sid"))
+        if len(targets) >= max_items:
+            break
+    return targets
+
+
+def _safe_exp(value: float) -> float:
+    return float(math.exp(min(value, 50.0)))
+
+
+def compute_sid_teacher_forcing_metrics(
+    *,
+    model: nn.Module,
+    tokenizer: Any,
+    prompt: str,
+    ground_truth: str,
+    input_device: torch.device,
+    max_items: int = DEFAULT_SID_PPL_MAX_ITEMS,
+) -> dict[str, Any]:
+    """Compute teacher-forcing NLL/PPL for ground-truth SID tokens.
+
+    The AD prompt already ends with <|sid_begin|>. This metric scores the next
+    ground-truth <s_a_*><s_b_*><s_c_*> tokens, not sid_begin/sid_end.
+    """
+    targets = extract_sid_teacher_forcing_targets(ground_truth, max_items=max_items)
+    if not targets:
+        return {
+            "sid_tf_valid": False,
+            "sid_tf_num_items": 0,
+            "sid_tf_num_tokens": 0,
+        }
+
+    prompt_encoded = tokenizer(prompt, return_tensors="pt")
+    prompt_input_ids = prompt_encoded["input_ids"]
+    prompt_len = int(prompt_input_ids.shape[-1])
+    prompt_attention_mask = prompt_encoded.get("attention_mask")
+
+    total_loss = 0.0
+    total_tokens = 0
+    valid_items = 0
+    first_target = targets[0]
+
+    for target_text in targets:
+        target_ids = tokenizer(target_text, add_special_tokens=False, return_tensors="pt")["input_ids"]
+        target_len = int(target_ids.shape[-1])
+        if target_len == 0:
+            continue
+
+        input_ids = torch.cat([prompt_input_ids, target_ids], dim=-1).to(input_device)
+        model_inputs: dict[str, torch.Tensor] = {"input_ids": input_ids}
+        if prompt_attention_mask is not None:
+            target_mask = torch.ones_like(target_ids)
+            attention_mask = torch.cat([prompt_attention_mask, target_mask], dim=-1).to(input_device)
+            model_inputs["attention_mask"] = attention_mask
+
+        labels = target_ids.reshape(-1).to(input_device)
+        positions = torch.arange(
+            prompt_len - 1,
+            prompt_len - 1 + target_len,
+            device=input_device,
+        )
+        with torch.inference_mode():
+            try:
+                outputs = model(**model_inputs, use_cache=False)
+            except TypeError:
+                outputs = model(**model_inputs)
+        logits = outputs.logits[0, positions, :].float()
+        losses = F.cross_entropy(logits, labels, reduction="none")
+        total_loss += float(losses.sum().item())
+        total_tokens += target_len
+        valid_items += 1
+
+    if total_tokens == 0:
+        return {
+            "sid_tf_valid": False,
+            "sid_tf_num_items": 0,
+            "sid_tf_num_tokens": 0,
+        }
+
+    mean_nll = total_loss / total_tokens
+    return {
+        "sid_tf_valid": True,
+        "sid_tf_nll": mean_nll,
+        "sid_tf_ppl": _safe_exp(mean_nll),
+        "sid_tf_num_items": valid_items,
+        "sid_tf_num_tokens": total_tokens,
+        "sid_tf_target": first_target,
+    }
+
+
+def aggregate_sid_teacher_forcing_metrics(
+    sample_metrics: Mapping[str, Mapping[str, Any]],
+    *,
+    max_items: int,
+) -> dict[str, Any]:
+    total_samples = len(sample_metrics)
+    valid_samples = 0
+    total_tokens = 0
+    weighted_nll = 0.0
+    total_items = 0
+    for metrics in sample_metrics.values():
+        if not metrics.get("sid_tf_valid"):
+            continue
+        num_tokens = int(metrics.get("sid_tf_num_tokens", 0))
+        if num_tokens <= 0:
+            continue
+        valid_samples += 1
+        total_items += int(metrics.get("sid_tf_num_items", 0))
+        total_tokens += num_tokens
+        weighted_nll += float(metrics["sid_tf_nll"]) * num_tokens
+
+    mean_nll = weighted_nll / total_tokens if total_tokens else None
+    return {
+        "sid_tf_enabled": True,
+        "sid_tf_definition": "teacher_forcing_gt_sid_tokens_excluding_sid_begin_end",
+        "sid_tf_max_items_per_sample": max_items,
+        "sid_tf_total_samples": total_samples,
+        "sid_tf_valid_samples": valid_samples,
+        "sid_tf_invalid_samples": total_samples - valid_samples,
+        "sid_tf_num_items": total_items,
+        "sid_tf_num_tokens": total_tokens,
+        "sid_tf_nll": mean_nll,
+        "sid_tf_ppl": None if mean_nll is None else _safe_exp(mean_nll),
+    }
+
+
+
 def result_path(output_dir: str, model_name: str, split: str) -> Path:
     return resolve_repo_path(output_dir) / model_name / "ad" / f"{split}_generated.json"
 
@@ -1191,6 +830,7 @@ def save_results(
     generations: Mapping[str, list[str]],
     total_time: float,
     config: Mapping[str, Any],
+    sample_aux_metrics: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     samples: dict[str, dict[str, Any]] = {}
     for sample_id, sample in test_data.items():
@@ -1201,6 +841,8 @@ def save_results(
         }
         if "metadata" in sample:
             item["metadata"] = sample["metadata"]
+        if sample_aux_metrics and sample_id in sample_aux_metrics:
+            item.update(sample_aux_metrics[sample_id])
         samples[sample_id] = item
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1229,6 +871,25 @@ def maybe_evaluate(output_dir: str, data_dir: str, overwrite: bool) -> None:
     )
 
 
+def merge_sid_teacher_forcing_metrics_into_eval(
+    *,
+    output_dir: str,
+    model_name: str,
+    split: str,
+    metrics: Mapping[str, Any],
+) -> None:
+    eval_path = resolve_repo_path(output_dir) / "eval_results.json"
+    if not eval_path.exists():
+        return
+    data = json.loads(eval_path.read_text(encoding="utf-8"))
+    model_metrics = data.setdefault(model_name, {})
+    task_metrics = model_metrics.setdefault("ad", {})
+    split_metrics = task_metrics.setdefault(split, {})
+    split_metrics.update(dict(metrics))
+    eval_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+
 def histories_to_jsonable(histories: Mapping[int, CalibrationHistory]) -> dict[str, Any]:
     return {
         str(layer_idx): {
@@ -1252,48 +913,14 @@ def summaries_to_jsonable(summaries: Mapping[int, BaselineQuantSummary]) -> dict
     }
 
 
-def _detach_tree(obj: Any) -> Any:
-    if torch.is_tensor(obj):
-        return obj.detach().clone()
-    if isinstance(obj, tuple):
-        return tuple(_detach_tree(item) for item in obj)
-    if isinstance(obj, list):
-        return [_detach_tree(item) for item in obj]
-    if isinstance(obj, Mapping):
-        return {key: _detach_tree(value) for key, value in obj.items()}
-    return obj
-
-
-def _module_device(module: nn.Module) -> torch.device | None:
-    for param in module.parameters(recurse=True):
-        return param.device
-    for buffer in module.buffers(recurse=True):
-        return buffer.device
-    return None
-
-
-def _move_tree_to_device(obj: Any, device: torch.device | None) -> Any:
-    if device is None:
-        return obj
-    if torch.is_tensor(obj):
-        return obj.to(device) if obj.device != device else obj
-    if isinstance(obj, tuple):
-        return tuple(_move_tree_to_device(item, device) for item in obj)
-    if isinstance(obj, list):
-        return [_move_tree_to_device(item, device) for item in obj]
-    if isinstance(obj, Mapping):
-        return {key: _move_tree_to_device(value, device) for key, value in obj.items()}
-    return obj
-
-
 def main() -> None:
     args = parse_args()
-    if args.calib_offset < 0 or args.eval_offset < 0:
-        raise ValueError("Offsets must be non-negative.")
+    if args.sid_ppl_max_items <= 0:
+        raise ValueError(f"--sid_ppl_max_items must be positive, got {args.sid_ppl_max_items}")
     set_seed(args.seed)
 
     # Load model and tokenizer
-    model_name = args.model_name or Path(args.model_path.rstrip("/")).name
+    model_name = Path(args.model_path.rstrip("/")).name
     output_file = result_path(args.output_dir, model_name, args.split)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     if output_file.exists() and not args.overwrite and not args.calib_only:
@@ -1307,20 +934,17 @@ def main() -> None:
         "torch_dtype": dtype_from_name(args.dtype),
         "trust_remote_code": True,
     }
-    if args.device_map:
-        model_kwargs["device_map"] = args.device_map
     model = AutoModelForCausalLM.from_pretrained(args.model_path, **model_kwargs)
-    if not args.device_map:
-        model = model.to(args.device)
+    model = model.to(args.device)
     model.eval()
     input_device = resolve_input_device(model, args.device)
 
     # Load config and data
     task_config = get_task_config("ad")
     prompt_token = task_config.get("generation_config", {}).get("prompt_token", "<|sid_begin|>")
-    calib_data_dir = args.calib_data_dir or args.data_dir
-    eval_data_dir = args.eval_data_dir or args.data_dir
-    calib_split = args.calib_split or default_calib_split(calib_data_dir, args.split)
+    calib_data_dir = args.data_dir
+    eval_data_dir = args.data_dir
+    calib_split = default_calib_split(calib_data_dir, args.split)
 
     layers = get_transformer_layers(model)
     layer_indices = parse_layer_indices(args.layers, num_layers=len(layers))
@@ -1357,8 +981,6 @@ def main() -> None:
             smooth_fold=args.smooth_fold,
         )
         print(f"[load_quant_params] applied layers={layer_indices} from {load_path}")
-    elif args.skip_calibration:
-        raise ValueError("--skip_calibration requires --load_quant_params.")
     elif args.mode in {"m1_lwt", "m2_let", "m2_lwt_let"}:
         calib_data = load_ad_data(
             tokenizer,
@@ -1437,7 +1059,7 @@ def main() -> None:
     else:
         raise ValueError(f"Unsupported mode: {args.mode}")
 
-    if args.save_quant_params and learned_quant_params:
+    if learned_quant_params:
         quant_params_file = output_file.parent / f"{args.mode}_learned_quant_params.pt"
         torch.save(quant_params_payload, quant_params_file)
 
@@ -1469,10 +1091,11 @@ def main() -> None:
         "num_beams": args.num_beams,
         "num_return_sequences": args.num_return_sequences,
         "max_new_tokens": args.max_new_tokens,
+        "compute_sid_ppl": args.compute_sid_ppl,
+        "sid_ppl_max_items": args.sid_ppl_max_items,
         "seed": args.seed,
-        "save_quant_params": args.save_quant_params,
+        "save_quant_params": True,
         "load_quant_params": args.load_quant_params,
-        "skip_calibration": args.skip_calibration,
         "quant_params_file": None if quant_params_file is None else str(quant_params_file),
         "histories": histories_to_jsonable(histories),
         "baseline_summaries": summaries_to_jsonable(baseline_summaries),
@@ -1488,8 +1111,6 @@ def main() -> None:
         json.dumps(config, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    if args.save_model_state:
-        torch.save(model.state_dict(), output_file.parent / f"{args.mode}_quantized_model_state.pt")
     if args.calib_only:
         return
 
@@ -1502,6 +1123,8 @@ def main() -> None:
     )
     test_items = list(test_data.items())
     generations: dict[str, list[str]] = {}
+    sample_aux_metrics: dict[str, dict[str, Any]] = {}
+    sid_tf_total_time = 0.0
     start = time.time()
     for sample_id, sample in tqdm(
         test_items,
@@ -1509,6 +1132,17 @@ def main() -> None:
         desc=f"{args.mode} AD generation",
     ):
         prompt = format_prompt(sample["prompt"], prompt_token)
+        if args.compute_sid_ppl:
+            sid_tf_start = time.time()
+            sample_aux_metrics[sample_id] = compute_sid_teacher_forcing_metrics(
+                model=model,
+                tokenizer=tokenizer,
+                prompt=prompt,
+                ground_truth=sample.get("ground_truth", ""),
+                input_device=input_device,
+                max_items=args.sid_ppl_max_items,
+            )
+            sid_tf_total_time += time.time() - sid_tf_start
         generations[sample_id] = generate_one(
             model=model,
             tokenizer=tokenizer,
@@ -1516,7 +1150,22 @@ def main() -> None:
             input_device=input_device,
             args=args,
         )
-    total_time = time.time() - start
+    raw_total_time = time.time() - start
+    total_time = raw_total_time - sid_tf_total_time if args.compute_sid_ppl else raw_total_time
+
+    sid_tf_metrics: dict[str, Any] = {}
+    if args.compute_sid_ppl:
+        sid_tf_metrics = aggregate_sid_teacher_forcing_metrics(
+            sample_aux_metrics,
+            max_items=args.sid_ppl_max_items,
+        )
+        sid_tf_metrics["sid_tf_total_time"] = sid_tf_total_time
+        sid_tf_metrics["sid_tf_avg_time_per_sample"] = sid_tf_total_time / len(test_items) if test_items else 0.0
+        config["sid_teacher_forcing_metrics"] = sid_tf_metrics
+        (output_file.parent / config_filename).write_text(
+            json.dumps(config, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     save_results(
         output_file=output_file,
@@ -1526,9 +1175,17 @@ def main() -> None:
         generations=generations,
         total_time=total_time,
         config=config,
+        sample_aux_metrics=sample_aux_metrics if args.compute_sid_ppl else None,
     )
     if args.evaluate:
         maybe_evaluate(args.output_dir, eval_data_dir, args.overwrite)
+        if sid_tf_metrics:
+            merge_sid_teacher_forcing_metrics_into_eval(
+                output_dir=args.output_dir,
+                model_name=model_name,
+                split=args.split,
+                metrics=sid_tf_metrics,
+            )
 
 
 if __name__ == "__main__":

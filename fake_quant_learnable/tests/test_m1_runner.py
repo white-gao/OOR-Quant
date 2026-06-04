@@ -5,16 +5,19 @@ import torch.nn as nn
 
 from fake_quant.smoothquant.core import compute_smooth_scale
 from fake_quant_learnable.modules import BaselineFakeQuantLinear, FrozenLearnedFakeQuantLinear, LearnableFakeQuantLinear
+from fake_quant_learnable.smoothquant_runtime import (
+    apply_smoothquant_scales_to_learnable,
+    collect_smoothquant_scales,
+)
 from fake_quant_learnable.run_m1_onerec_ad import (
     apply_baseline_layers,
     apply_learned_quant_params_to_layers,
     apply_smoothquant_layers,
-    apply_smoothquant_scales_to_learnable,
     calibrate_model_layers_m1,
     capture_layer_input_batches,
-    collect_smoothquant_scales,
     get_transformer_layers,
     load_ad_data,
+    parse_args,
     parse_layer_indices,
 )
 
@@ -128,6 +131,23 @@ def test_parse_layer_indices_supports_all_last_and_csv() -> None:
     assert parse_layer_indices("all", num_layers=4) == [0, 1, 2, 3]
     assert parse_layer_indices("last:2", num_layers=4) == [2, 3]
     assert parse_layer_indices("0,2-3", num_layers=4) == [0, 2, 3]
+
+
+def test_parse_args_attaches_compact_fixed_defaults(monkeypatch) -> None:
+    monkeypatch.setattr("sys.argv", ["prog"])
+
+    args = parse_args()
+
+    assert args.mode == "m2_lwt_let"
+    assert args.model_path == "/home/guowei/OneRec-1.7B/"
+    assert args.data_dir == "data/onerec_data/benchmark-data-calib1024"
+    assert args.act_quant == "per_token"
+    assert args.act_quant_mode == "shared_input"
+    assert args.smooth_scope == "omni"
+    assert args.smooth_fold is True
+    assert args.num_beams == 32
+    assert args.num_return_sequences == 32
+    assert args.max_new_tokens == 3
 
 
 def test_get_transformer_layers_reads_model_model_layers() -> None:

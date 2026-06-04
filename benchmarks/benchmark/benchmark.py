@@ -349,6 +349,18 @@ class Benchmark:
             console.print(f"Created debug file: {debug_file}")
     
     @staticmethod
+    def _extract_precomputed_metrics(gen_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract metrics that were computed during generation-time model forward passes."""
+        for config_key in ("quant_config", "learnable_quant_config", "fake_quant_config"):
+            config = gen_data.get(config_key, {})
+            if isinstance(config, dict):
+                metrics = config.get("sid_teacher_forcing_metrics")
+                if isinstance(metrics, dict):
+                    return dict(metrics)
+        metrics = gen_data.get("sid_teacher_forcing_metrics")
+        return dict(metrics) if isinstance(metrics, dict) else {}
+
+    @staticmethod
     def _calculate_model_total_time(model_results: Dict[str, Any]) -> float:
         """Calculate total time for all tasks of a model"""
         model_total_time = 0
@@ -454,8 +466,10 @@ class Benchmark:
                         continue
 
                     Benchmark._create_debug_file(generation_file, gen_data, samples, overwrite)
+                    precomputed_metrics = Benchmark._extract_precomputed_metrics(gen_data)
                     eval_results[model_name][task_name][split] = {
                         **metrics,
+                        **precomputed_metrics,
                         "total_time": gen_data.get("total_time", 0),
                         "avg_time_per_sample": gen_data.get("avg_time_per_sample", 0),
                     }
