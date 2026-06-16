@@ -19,25 +19,6 @@ def require_fp8() -> torch.dtype:
     return torch.float8_e4m3fn
 
 
-def round_ste(x: torch.Tensor) -> torch.Tensor:
-    """Round in forward and use identity gradient in backward."""
-    return x + (torch.round(x) - x).detach()
-
-
-def _uniform_symmetric_qdq_ste(
-    x: torch.Tensor,
-    scale: torch.Tensor,
-    *,
-    qmax: float = FP8_MAX,
-    eps: float = 1e-12,
-) -> torch.Tensor:
-    orig_dtype = x.dtype
-    scale_float = torch.clamp(scale.float(), min=eps)
-    q = round_ste(x.float() / scale_float)
-    q = torch.clamp(q, min=-qmax, max=qmax)
-    return (q * scale_float).to(orig_dtype)
-
-
 def fp8_e4m3_qdq_forward(
     x: torch.Tensor,
     scale: torch.Tensor,
@@ -52,19 +33,6 @@ def fp8_e4m3_qdq_forward(
     q = torch.clamp(x.float() / scale_float, min=-qmax, max=qmax)
     q = q.to(fp8_dtype)
     return (q.float() * scale_float).to(orig_dtype)
-
-
-def fp8_e4m3_qdq_ste(
-    x: torch.Tensor,
-    scale: torch.Tensor,
-    *,
-    qmax: float = FP8_MAX,
-    eps: float = 1e-12,
-) -> torch.Tensor:
-    """FP8 E4M3 forward with a uniform STE proxy for backward gradients."""
-    qdq_forward = fp8_e4m3_qdq_forward(x, scale, qmax=qmax, eps=eps)
-    qdq_proxy = _uniform_symmetric_qdq_ste(x, scale, qmax=qmax, eps=eps)
-    return qdq_proxy + (qdq_forward - qdq_proxy).detach()
 
 
 def fp8_weight_per_channel_forward(
@@ -93,35 +61,26 @@ def activation_per_token_qdq_forward(
     return fp8_e4m3_qdq_forward(x, scale, qmax=qmax, eps=eps)
 
 
-def activation_per_token_qdq_ste(
+def protect_tail_tokens(quantized: torch.Tensor, original: torch.Tensor, tail_tokens: int) -> torch.Tensor:
+    """Restore the final sequence tokens after activation QDQ."""
+    if tail_tokens <= 0 or original.ndim < 2:
+        return quantized
+    seq_len = int(original.shape[-2])
+    if seq_len <= 0:
+        return quantized
+    tail = min(int(tail_tokens), seq_len)
+    protected = quantized.clone()
+    protected[..., -tail:, :] = original[..., -tail:, :]
+    return protected
+
+
+def activation_per_token_qdq_forward_tail_protected(
     x: torch.Tensor,
     *,
+    tail_tokens: int,
     qmax: float = FP8_MAX,
     eps: float = 1e-12,
 ) -> torch.Tensor:
-    """Activation FP8 E4M3 QDQ forward with identity STE gradient to activations."""
-    absmax = x.detach().float().abs().amax(dim=-1, keepdim=True)
-    scale = torch.clamp(absmax / qmax, min=eps)
-    return fp8_e4m3_qdq_ste(x, scale, qmax=qmax, eps=eps)
-
-
-def symmetric_clip(weight: torch.Tensor, clip: torch.Tensor) -> torch.Tensor:
-    """Symmetric clip that routes gradients to clip for saturated weights."""
-    return torch.where(weight > clip, clip, torch.where(weight < -clip, -clip, weight))
-
-
-def lwt_weight_qdq_ste(
-    weight: torch.Tensor,
-    clip: torch.Tensor,
-    *,
-    qmax: float = FP8_MAX,
-    eps: float = 1e-12,
-) -> torch.Tensor:
-    """Apply learnable symmetric clipping and FP8 E4M3 STE QDQ to Linear weights."""
-    if weight.ndim != 2:
-        raise ValueError(f"Expected 2D Linear weight, got shape {tuple(weight.shape)}")
-    clip_float = torch.clamp(clip.float(), min=eps)
-    weight_float = weight.float()
-    clipped = symmetric_clip(weight_float, clip_float)
-    scale = clip_float / qmax
-    return fp8_e4m3_qdq_ste(clipped, scale, qmax=qmax, eps=eps).to(weight.dtype)
+    """Per-token activation QDQ with the final sequence tokens kept in FP dtype."""
+    quantized = activation_per_token_qdq_forward(x, qmax=qmax, eps=eps)
+    return protect_tail_tokens(quantized, x, tail_tokens)

@@ -1,48 +1,84 @@
 # fake_quant_learnable/results
 
-This directory contains local experiment outputs for the OneRec learnable PTQ work. It is intentionally organized into two groups:
+This directory stores local OneRec AD quantization experiment outputs.
 
-- experiment run directories: end-to-end generation/evaluation outputs, kept at the top level;
-- `analysis/`: small diagnostic plots and JSON files used to understand quantization behavior.
+The top-level layout is intentionally split by purpose:
 
-## Top-Level Experiment Runs
+```text
+analysis/   diagnostic plots and small JSON files
+runs/       completed end-to-end generation/evaluation runs
+archive/    incomplete, redundant, or non-comparable historical outputs
+```
 
-Top-level directories such as `baseline_w8a8_*`, `smoothquant_w8a8_*`, `m2_lwt_let_*`, and `w8a8_tail1_*` are full or partial AD benchmark runs. Most contain:
+Large run directories usually contain:
 
 ```text
 <run>/<model_name>/ad/test_generated.json
+<run>/<model_name>/ad/*.json.debug
 <run>/eval_results.json
 ```
 
-Representative full-set calib1024 runs currently used in discussion:
+`eval_results.json` is the source for recommendation metrics. `test_generated.json` is the source for generated SID beams and per-sample outputs.
+
+## runs/
+
+### runs/main_full_calib1024/
+
+Completed full-test runs on the calib1024 split that are useful as primary baselines:
 
 ```text
 baseline_w8a8_1p7b_ad_calib1024/
+baseline_w8a8_ad_calib1024_8b_full/
+smoothquant_w8a8_1p7b_ad_calib1024_fixed_fold_full/
 smoothquant_w8a8_fold_ad_calib1024_1p7b/
 smoothquant_w8a8_alpha0p4/
-m2_lwt_let_sqinit_ad_calib1024_1p7b/
-w8a8_tail1_ad_calib1024_1p7b_full/
-baseline_w8a8_ad_calib1024_8b_full/
+smoothquant_w8a8_ad_calib1024_epochs2_20260531_142733/
 smoothquant_w8a8_ad_calib1024_8b_full/
+```
+
+### runs/ablations_full_calib1024/
+
+Completed full-test ablation runs:
+
+```text
+baseline_w8a8_skip_last_ad_calib1024_1p7b_full/
+baseline_w8a8_skip_last4_ad_calib1024_1p7b_full/
+w8a8_tail1_ad_calib1024_1p7b_full/
+w8a8_decode_a16_ad_calib1024_1p7b_full/
+```
+
+`w8a8_decode_a16_ad_calib1024_1p7b_full/run.log` is the background log for that run.
+
+### runs/historical_lwc_let/
+
+Historical LWC/LET results kept for traceability. These methods are no longer part of the active `fake_quant_learnable` runner:
+
+```text
+m2_lwt_let_1p7b_ad_calib1024_sqinit_fixed_fold_full/
+m2_lwt_let_ad_calib1024_epochs2_20260529_170532/
+m2_lwt_let_ad_calib1024_epochs2_20260531_143027/
+m2_lwt_let_sqinit_ad_calib1024_1p7b/
 m2_lwt_let_sqinit_ad_calib1024_8b_full/
 ```
 
-Historical or diagnostic runs are still kept for traceability but should not be treated as main results without checking their config:
+### runs/subset_ad1000/
+
+Old AD1000 or old-data subset runs. These are useful for historical comparison only and should not be mixed directly with full-test calib1024 conclusions:
 
 ```text
-*_ad1000_*
-debug_*
-custom_w8a8_beam_*
-w8a16_prefill_w8a8_decode_*
+baseline_w8a8_ad1000_calib_offset_1000_20260527_130552/
+m1_lwt_ad1000_calib_offset_1000_20260527_114303/
+m2_let_ad1000_calib_offset_1000_20260527_141945/
+m2_lwt_let_ad1000_calib_offset_1000_20260527_123634/
+m2_lwt_let_ad1000_calib_offset_1000_20260527_151734/
+smoothquant_w8a8_1p7b_olddata_ad1000_calib128_offset1000_fixed/
 ```
-
-`custom_w8a8_beam_*` and `w8a16_prefill_w8a8_decode_*` are not directly comparable with the current HF `generate` baseline and should only be used as debugging records.
 
 ## analysis/
 
-### analysis/lwt_loss_curves
+### analysis/lwt_loss_curves/
 
-Historical LWT/LWT+LET per-layer loss curve plots:
+Historical M1/M2 per-layer MSE plots:
 
 ```text
 m1_lwt_layer_mse_initial_vs_final*.png
@@ -51,18 +87,16 @@ m2_lwt_let_layer_mse_initial_vs_final*.png
 
 These plots show optimization loss trends, not final recommendation metrics.
 
-### analysis/smoothquant_distribution
+### analysis/smoothquant_distribution/
 
-Small SmoothQuant distribution probes, mainly for last-layer `mlp.down_proj`:
+Small SmoothQuant distribution probes for activation/weight distribution checks:
 
 ```text
 sq_dist_last_down_calib3*.json
 sq_dist_last_down_calib3.png
 ```
 
-Use these files to inspect whether SmoothQuant actually smooths activation distributions and how it changes folded weight distributions.
-
-### analysis/smoothquant_mse_tradeoff
+### analysis/smoothquant_mse_tradeoff/
 
 SmoothQuant vs baseline W8A8 block-MSE diagnostics:
 
@@ -73,25 +107,34 @@ sq_mse_worse_layer17_*.json/png
 sq_mse_worse_layer20_*.json/png
 ```
 
-The layer-wise MSE check used 3 calib samples and BF16 teacher-prefix layer inputs. It is a lightweight diagnostic, not a held-out final conclusion. Current observation: SmoothQuant lowers activation ranges strongly, but folded weights become much larger; for some layers, block output MSE increases.
+These diagnostics use a small number of calibration samples and should be treated as mechanism probes, not held-out benchmark results.
+
+### analysis/token_modality_gap/
+
+MQuant/MBQ-inspired probes comparing text-token and SID-token activation distributions for OneRec-1.7B and OneRec-8B.
 
 ## archive/
 
-`archive/` stores files moved out of the top-level results view but not permanently deleted. The current archive is:
+`archive/` stores moved-out outputs that should not clutter the active results view:
 
 ```text
 archive/redundant_20260603/
 ```
 
-It contains empty debug directories, incomplete runs without evaluation outputs, custom beam / staged prefill-decode experiments that are not comparable with the current HF `generate` baseline, and old calibration-only artifacts. Remove archive folders manually only after confirming they are no longer needed.
+This includes incomplete debug directories, old custom beam experiments, staged prefill/decode experiments, and calibration-only artifacts. These are not directly comparable with the current HF `generate` baseline.
 
-## logs/
+## Active Top-Level Runs
 
-No top-level `logs/` directory is kept when empty. For future background runs, create `results/logs/` as needed or redirect logs into the corresponding run directory.
+Top-level run directories should normally be avoided. If a directory remains at the top level, it is likely still running or was intentionally left untouched.
 
-## Notes
+As of the cleanup on 2026-06-08, this directory was left in place because a process was actively writing to it:
 
-- `eval_results.json` is the source for recommendation metrics.
-- `test_generated.json` is the source for generated SID beams and per-sample outputs.
-- Diagnostic plots/JSON under `analysis/` are for explaining mechanisms, not leaderboard numbers.
-- Before reporting a result, check the run config under `<run>/<model_name>/ad/*config.json` or `learnable_quant_config` in `test_generated.json`.
+```text
+w8a8_decode_a16_ad_calib1024_8b_full/
+```
+
+After it finishes and produces `eval_results.json`, move it to:
+
+```text
+runs/ablations_full_calib1024/
+```
