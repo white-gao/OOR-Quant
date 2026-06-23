@@ -5,6 +5,8 @@ It uses the FP model and teacher-forced ground-truth SID CE loss, then backpropa
 
 ## Command
 
+> Legacy reproduction note: this command referenced the removed `fake_quant/` probe package. Keep this README as historical provenance; rerunning requires restoring or rewriting the old probe.
+
 ```bash
 TOKENIZERS_PARALLELISM=false RAYON_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 python3 -m fake_quant.probes.token_sensitivity.probe_sid_token_sensitivity   --model_path /home/guowei/OneRec-1.7B/   --data_dir data/onerec_data/benchmark-data-calib1024   --split calib   --sample_size 16   --sample_offset 0   --device cuda:4   --layers 0,8,16,24,27   --nodes attn_qkv_input,ffn_gate_up_input,block_output   --output_dir fake_quant_learnable/results/analysis/token_sensitivity/sid_tf_ce_sample16_layers0_8_16_24_27_core_nodes
 ```

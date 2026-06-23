@@ -4,22 +4,17 @@ This directory is trimmed for OneRec quantization and AD-domain evaluation. The 
 
 ## Main Entrypoints
 
-Run HuggingFace fake-quant AD evaluation from the repository root:
+Active fake-quant/GPTQ experiments are run from `fake_quant_learnable/`, for example:
 
 ```bash
-bash fake_quant/run_hf_ad_full_quant.sh
+python3 -m fake_quant_learnable.run_m1_onerec_ad --mode weighted_gptq_fp8_w8a8
 ```
 
-Run SmoothQuant-style FP8 fake quant:
-
-```bash
-bash fake_quant/smoothquant/run_smoothquant_ad.sh
-```
 
 ## Retained Structure
 
 ```text
-benchmark/      # RecIF-Bench loaders/evaluators used by ../fake_quant
+benchmark/      # RecIF-Bench loaders/evaluators used by ../fake_quant_learnable
 scripts/        # offline quantization and analysis scripts
 results/        # selected experiment summaries
 models/         # lightweight offline quantization artifacts/configs
@@ -29,4 +24,4 @@ models/         # lightweight offline quantization artifacts/configs
 
 The current research path focuses on AD SID prediction. Non-AD task code may still exist under `benchmark/tasks/v1_0/` because the registry and shared evaluator utilities are still useful, but API-based tasks are not part of the active workflow.
 
-For detailed experiment context, see `CODEX_README.md` and `../fake_quant/MAIN.md`.
+For current experiment context, see `../fake_quant_learnable/project_note.md`; archived fake-quant notes are in `../fake_quant_learnable/support/legacy_fake_quant_notes.md`.

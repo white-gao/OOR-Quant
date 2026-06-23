@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from fake_quant.smoothquant.core import compute_smooth_scale
+from fake_quant_learnable.support.smoothquant_core import compute_smooth_scale
 from fake_quant_learnable.modules import BaselineFakeQuantLinear, FrozenLearnedFakeQuantLinear, LearnableFakeQuantLinear
 from fake_quant_learnable.smoothquant_runtime import (
     apply_smoothquant_scales_to_learnable,

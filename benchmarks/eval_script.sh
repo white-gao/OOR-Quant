@@ -4,14 +4,14 @@ set -euo pipefail
 cat >&2 <<'EOF'
 eval_script.sh is deprecated in this trimmed AD-only workspace.
 
-The old vLLM/Ray runner under scripts/ray-vllm/ was removed. Use the current
-HuggingFace fake-quant entrypoints instead:
+The old vLLM/Ray runner under scripts/ray-vllm/ and the legacy fake_quant/
+entrypoints were removed. Use the current HuggingFace/PyTorch runner instead:
 
-  bash fake_quant/run_hf_ad_full_quant.sh
+  python3 -m fake_quant_learnable.run_m1_onerec_ad --mode weighted_gptq_fp8_w8a8
 
-For SmoothQuant:
+For the product/video serial suite:
 
-  bash fake_quant/smoothquant/run_smoothquant_ad.sh
+  GPU_ID=0 bash fake_quant_learnable/run_product_video_quant_suite.sh
 EOF
 
 exit 1

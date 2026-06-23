@@ -41,7 +41,7 @@ from .smoothquant_runtime import (
 from .runtime_utils import _move_tree_to_device
 from .calibrate_m1_lwt import _batch_to_args_kwargs
 from benchmark.tasks.v1_0.registry import get_task_config
-from fake_quant.smoothquant.core import smooth_linear_weight
+from fake_quant_learnable.support.smoothquant_core import smooth_linear_weight
 
 
 def parse_args() -> argparse.Namespace:

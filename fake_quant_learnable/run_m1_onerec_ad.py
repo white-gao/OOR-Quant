@@ -72,6 +72,8 @@ from benchmark.tasks.v1_0.registry import get_loader, get_task_config  # noqa: E
 DEFAULT_MODEL_PATH = "/home/guowei/OneRec-1.7B/"
 DEFAULT_DATA_DIR = "data/onerec_data/benchmark-data-calib1024"
 DEFAULT_OUTPUT_DIR = "fake_quant_learnable/results/ptq_ad"
+DEFAULT_TASK = "ad"
+TASK_CHOICES = ("ad", "product", "video")
 DEFAULT_SPLIT = "test"
 DEFAULT_CALIB_OFFSET = 0
 DEFAULT_EVAL_OFFSET = 0
@@ -92,18 +94,21 @@ SID_ITEM_RE = re.compile(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run OneRec AD evaluation with W8A8, SmoothQuant W8A8, GPTQ-FP8 W8A8, token-weighted GPTQ-FP8 W8A8, tail-protected token-weighted GPTQ-FP8 W8A8, or gradient-weighted GPTQ-FP8 W8A8 fake quantization."
+        description="Run OneRec recommendation evaluation with full precision or W8A8/GPTQ FP8 fake quantization."
     )
+    parser.add_argument("--task", default=DEFAULT_TASK, choices=TASK_CHOICES)
     parser.add_argument(
         "--mode",
         default="baseline_w8a8",
         choices=[
+            "full_precision",
             "baseline_w8a8",
             "smoothquant_w8a8",
             "gptq_fp8_w8a8",
             "weighted_gptq_fp8_w8a8",
             "weighted_gptq_fp8_w8a8_tail1",
             "grad_weighted_gptq_fp8_w8a8",
+            "grad_weighted_gptq_fp8_w8a8_tail1",
         ],
     )
     parser.add_argument("--model_path", default=DEFAULT_MODEL_PATH)
@@ -183,8 +188,13 @@ def resolve_repo_path(path: str | os.PathLike[str]) -> Path:
     return PROJECT_ROOT / path_obj
 
 
-def default_calib_split(data_dir: str | os.PathLike[str], fallback_split: str) -> str:
-    calib_file = resolve_repo_path(data_dir) / "ad" / "ad_calib.parquet"
+def default_calib_split(
+    data_dir: str | os.PathLike[str],
+    fallback_split: str,
+    *,
+    task_name: str = DEFAULT_TASK,
+) -> str:
+    calib_file = resolve_repo_path(data_dir) / task_name / f"{task_name}_calib.parquet"
     return "calib" if calib_file.exists() else fallback_split
 
 
@@ -252,7 +262,9 @@ def parse_layer_indices(spec: str, *, num_layers: int) -> list[int]:
     return deduped
 
 
-def load_ad_data(
+def load_task_data(
+    *,
+    task_name: str,
     tokenizer: Any,
     data_dir: str,
     split: str,
@@ -267,7 +279,7 @@ def load_ad_data(
         loader_sample_size = sample_size + sample_offset
 
     loader = get_loader(
-        task_name="ad",
+        task_name=task_name,
         data_dir=data_dir,
         enable_thinking=False,
         tokenizer=tokenizer,
@@ -286,6 +298,23 @@ def load_ad_data(
     if isinstance(sample_size, int):
         items = items[:sample_size]
     return dict(items)
+
+
+def load_ad_data(
+    tokenizer: Any,
+    data_dir: str,
+    split: str,
+    sample_size: Any,
+    sample_offset: int = 0,
+) -> dict[str, dict[str, Any]]:
+    return load_task_data(
+        task_name="ad",
+        tokenizer=tokenizer,
+        data_dir=data_dir,
+        split=split,
+        sample_size=sample_size,
+        sample_offset=sample_offset,
+    )
 
 
 def format_prompt(prompt: str, prompt_token: str) -> str:
@@ -763,8 +792,8 @@ def aggregate_sid_teacher_forcing_metrics(
     }
 
 
-def result_path(output_dir: str, model_name: str, split: str) -> Path:
-    return resolve_repo_path(output_dir) / model_name / "ad" / f"{split}_generated.json"
+def result_path(output_dir: str, model_name: str, task_name: str, split: str) -> Path:
+    return resolve_repo_path(output_dir) / model_name / task_name / f"{split}_generated.json"
 
 
 def save_results(
@@ -776,6 +805,7 @@ def save_results(
     generations: Mapping[str, list[str]],
     total_time: float,
     config: Mapping[str, Any],
+    task_name: str = DEFAULT_TASK,
     sample_aux_metrics: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     samples: dict[str, dict[str, Any]] = {}
@@ -794,7 +824,7 @@ def save_results(
     output_file.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "model_name": model_name,
-        "task_name": "ad",
+        "task_name": task_name,
         "split": split,
         "total_time": total_time,
         "avg_time_per_sample": total_time / len(samples) if samples else 0.0,
@@ -804,7 +834,7 @@ def save_results(
     output_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def maybe_evaluate(output_dir: str, data_dir: str, overwrite: bool) -> None:
+def maybe_evaluate(output_dir: str, data_dir: str, overwrite: bool, *, task_name: str = DEFAULT_TASK) -> None:
     output_root = resolve_repo_path(output_dir)
     data_root = resolve_repo_path(data_dir)
     Benchmark.evaluate_dev(
@@ -812,7 +842,7 @@ def maybe_evaluate(output_dir: str, data_dir: str, overwrite: bool) -> None:
         output_path=str(output_root / "eval_results.json"),
         data_dir=str(data_root),
         overwrite=overwrite,
-        task_types=["ad"],
+        task_types=[task_name],
     )
 
 
@@ -822,13 +852,14 @@ def merge_sid_teacher_forcing_metrics_into_eval(
     model_name: str,
     split: str,
     metrics: Mapping[str, Any],
+    task_name: str = DEFAULT_TASK,
 ) -> None:
     eval_path = resolve_repo_path(output_dir) / "eval_results.json"
     if not eval_path.exists():
         return
     data = json.loads(eval_path.read_text(encoding="utf-8"))
     model_metrics = data.setdefault(model_name, {})
-    task_metrics = model_metrics.setdefault("ad", {})
+    task_metrics = model_metrics.setdefault(task_name, {})
     split_metrics = task_metrics.setdefault(split, {})
     split_metrics.update(dict(metrics))
     eval_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -853,7 +884,7 @@ def main() -> None:
     set_seed(args.seed)
 
     model_name = Path(args.model_path.rstrip("/")).name
-    output_file = result_path(args.output_dir, model_name, args.split)
+    output_file = result_path(args.output_dir, model_name, args.task, args.split)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     if output_file.exists() and not args.overwrite:
         raise FileExistsError(f"Generation file exists: {output_file}. Use --overwrite.")
@@ -871,17 +902,23 @@ def main() -> None:
     model.eval()
     input_device = resolve_input_device(model, args.device)
 
-    task_config = get_task_config("ad")
+    task_config = get_task_config(args.task)
     prompt_token = task_config.get("generation_config", {}).get("prompt_token", "<|sid_begin|>")
     calib_data_dir = args.data_dir
     eval_data_dir = args.data_dir
-    calib_split = default_calib_split(calib_data_dir, args.split)
+    calib_split = default_calib_split(calib_data_dir, args.split, task_name=args.task)
 
     layers = get_transformer_layers(model)
     layer_indices = parse_layer_indices(args.layers, num_layers=len(layers))
     baseline_summaries: dict[int, BaselineQuantSummary] = {}
 
-    if args.mode == "baseline_w8a8":
+    tail1_modes = {"weighted_gptq_fp8_w8a8_tail1", "grad_weighted_gptq_fp8_w8a8_tail1"}
+    manual_weight_modes = {"weighted_gptq_fp8_w8a8", "weighted_gptq_fp8_w8a8_tail1"}
+    gradient_weight_modes = {"grad_weighted_gptq_fp8_w8a8", "grad_weighted_gptq_fp8_w8a8_tail1"}
+
+    if args.mode == "full_precision":
+        pass
+    elif args.mode == "baseline_w8a8":
         baseline_summaries = apply_baseline_layers(
             model=model,
             layer_indices=layer_indices,
@@ -894,12 +931,14 @@ def main() -> None:
         "weighted_gptq_fp8_w8a8",
         "weighted_gptq_fp8_w8a8_tail1",
         "grad_weighted_gptq_fp8_w8a8",
+        "grad_weighted_gptq_fp8_w8a8_tail1",
     }:
-        calib_data = load_ad_data(
-            tokenizer,
-            str(resolve_repo_path(calib_data_dir)),
-            calib_split,
-            parse_sample_size(args.calib_sample_size),
+        calib_data = load_task_data(
+            task_name=args.task,
+            tokenizer=tokenizer,
+            data_dir=str(resolve_repo_path(calib_data_dir)),
+            split=calib_split,
+            sample_size=parse_sample_size(args.calib_sample_size),
             sample_offset=args.calib_offset,
         )
         calib_prompts = [format_prompt(sample["prompt"], prompt_token) for sample in calib_data.values()]
@@ -925,7 +964,7 @@ def main() -> None:
             token_weight_config = None
             token_weight_batches = None
             token_weight_batches_by_layer = None
-            if args.mode in {"weighted_gptq_fp8_w8a8", "weighted_gptq_fp8_w8a8_tail1"}:
+            if args.mode in manual_weight_modes:
                 token_weight_config = PromptTokenWeightConfig(
                     history_sid_weight=args.token_weight_history_sid,
                     interest_sid_weight=args.token_weight_interest_sid,
@@ -939,7 +978,7 @@ def main() -> None:
                     device=input_device,
                     config=token_weight_config,
                 )
-            elif args.mode == "grad_weighted_gptq_fp8_w8a8":
+            elif args.mode in gradient_weight_modes:
                 grad_weight_config = GradientTokenWeightConfig(
                     clip_percentile=args.grad_weight_clip_percentile,
                     weight_floor=args.grad_weight_floor,
@@ -970,13 +1009,14 @@ def main() -> None:
                 block_size=args.gptq_block_size,
                 token_weight_batches=token_weight_batches,
                 token_weight_batches_by_layer=token_weight_batches_by_layer,
-                activation_tail_tokens=1 if args.mode == "weighted_gptq_fp8_w8a8_tail1" else 0,
+                activation_tail_tokens=1 if args.mode in tail1_modes else 0,
             )
     else:
         raise ValueError(f"Unsupported mode: {args.mode}")
 
     config = {
         "method": args.mode,
+        "task": args.task,
         "layers": layer_indices,
         "smoothquant_alpha": args.smoothquant_alpha,
         "smooth_scope": args.smooth_scope,
@@ -993,7 +1033,7 @@ def main() -> None:
                 sid_boundary_weight=args.token_weight_sid_boundary,
                 normalize_mean=args.token_weight_normalize_mean,
             ).to_jsonable()
-            if args.mode in {"weighted_gptq_fp8_w8a8", "weighted_gptq_fp8_w8a8_tail1"}
+            if args.mode in manual_weight_modes
             else None
         ),
         "gradient_token_weight_config": (
@@ -1002,13 +1042,13 @@ def main() -> None:
                 weight_floor=args.grad_weight_floor,
                 normalize_mean=args.grad_weight_normalize_mean,
             ).to_jsonable()
-            if args.mode == "grad_weighted_gptq_fp8_w8a8"
+            if args.mode in gradient_weight_modes
             else None
         ),
-        "gradient_token_weight_kind": "layerwise_group" if args.mode == "grad_weighted_gptq_fp8_w8a8" else None,
+        "gradient_token_weight_kind": "layerwise_group" if args.mode in gradient_weight_modes else None,
         "act_quant": args.act_quant,
         "act_quant_mode": args.act_quant_mode,
-        "activation_tail_tokens": 1 if args.mode == "weighted_gptq_fp8_w8a8_tail1" else 0,
+        "activation_tail_tokens": 1 if args.mode in tail1_modes else 0,
         "data_dir": args.data_dir,
         "calib_data_dir": calib_data_dir,
         "eval_data_dir": eval_data_dir,
@@ -1028,23 +1068,26 @@ def main() -> None:
         "baseline_summaries": summaries_to_jsonable(baseline_summaries),
     }
     config_filename = {
+        "full_precision": "full_precision_config.json",
         "baseline_w8a8": "baseline_w8a8_config.json",
         "smoothquant_w8a8": "smoothquant_w8a8_config.json",
         "gptq_fp8_w8a8": "gptq_fp8_w8a8_config.json",
         "weighted_gptq_fp8_w8a8": "weighted_gptq_fp8_w8a8_config.json",
         "weighted_gptq_fp8_w8a8_tail1": "weighted_gptq_fp8_w8a8_tail1_config.json",
         "grad_weighted_gptq_fp8_w8a8": "grad_weighted_gptq_fp8_w8a8_config.json",
+        "grad_weighted_gptq_fp8_w8a8_tail1": "grad_weighted_gptq_fp8_w8a8_tail1_config.json",
     }[args.mode]
     (output_file.parent / config_filename).write_text(
         json.dumps(config, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    test_data = load_ad_data(
-        tokenizer,
-        str(resolve_repo_path(eval_data_dir)),
-        args.split,
-        parse_sample_size(args.eval_sample_size),
+    test_data = load_task_data(
+        task_name=args.task,
+        tokenizer=tokenizer,
+        data_dir=str(resolve_repo_path(eval_data_dir)),
+        split=args.split,
+        sample_size=parse_sample_size(args.eval_sample_size),
         sample_offset=args.eval_offset,
     )
     test_items = list(test_data.items())
@@ -1055,7 +1098,7 @@ def main() -> None:
     for sample_id, sample in tqdm(
         test_items,
         total=len(test_items),
-        desc=f"{args.mode} AD generation",
+        desc=f"{args.mode} {args.task} generation",
     ):
         prompt = format_prompt(sample["prompt"], prompt_token)
         if args.compute_sid_ppl:
@@ -1101,16 +1144,18 @@ def main() -> None:
         generations=generations,
         total_time=total_time,
         config=config,
+        task_name=args.task,
         sample_aux_metrics=sample_aux_metrics if args.compute_sid_ppl else None,
     )
     if args.evaluate:
-        maybe_evaluate(args.output_dir, eval_data_dir, args.overwrite)
+        maybe_evaluate(args.output_dir, eval_data_dir, args.overwrite, task_name=args.task)
         if sid_tf_metrics:
             merge_sid_teacher_forcing_metrics_into_eval(
                 output_dir=args.output_dir,
                 model_name=model_name,
                 split=args.split,
                 metrics=sid_tf_metrics,
+                task_name=args.task,
             )
 
 

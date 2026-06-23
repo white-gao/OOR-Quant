@@ -188,139 +188,6 @@ COMPUTE_SID_PPL=1 MODE=baseline_w8a8 DEVICE=cuda:0 RUN_NAME=baseline_w8a8_sidppl
 4. boundary 大多数层低于手工，最后一层升到 `0.7731`，说明 boundary 影响可能更偏输出侧。
 5. 当前代码已将 `grad_weighted_gptq_fp8_w8a8` 改为纯梯度 layer-wise group 权重：先用 calib 梯度得到逐层 group 均值，再按 group 回填 per-token Hessian 权重；未引入手工 prior shrinkage。
 
-### 历史 AD1000 子集
-
-| run | pass@1 | pass@16 | pass@32 | recall@32 | pid_pass@32 | pid_recall@32 | 备注 |
-|---|---:|---:|---:|---:|---:|---:|---|
-| baseline_w8a8_ad1000_calib_offset_1000 | 0.019000 | 0.164000 | 0.233000 | 0.081563 | 0.220000 | 0.076784 | 旧子集 baseline |
-| m1_lwt_ad1000_calib_offset_1000 | 0.020000 | 0.153000 | 0.216000 | 0.078157 | 0.207000 | 0.074029 | M1 比 baseline 差 |
-| m2_lwt_let_ad1000_calib_offset_1000 | 0.024000 | 0.157000 | 0.224000 | 0.082351 | 0.212000 | 0.078189 | 曾经略有 recall@32 收益，但 pass@32 仍低 |
-| smoothquant_w8a8_1p7b_olddata_ad1000_calib128_offset1000_fixed | 0.019000 | 0.173000 | 0.243000 | 0.085479 | 0.226000 | 0.080742 | 旧数据/旧配置下 SQ 较好 |
-
-## 当前结论
-
-1. W8A8 baseline 和 SmoothQuant W8A8 在全量 test 上基本区分不开。SQ 能压制 activation 异常值，也能通过 fold 改变权重/激活分布，但推荐指标提升很小。
-
-2. M1 的 block MSE 可以下降，但推荐指标可能下降。这说明纯 block output MSE 不是 OneRec SID ranking 的充分代理目标。
-
-3. LWC+LET 的逐层 MSE 优化幅度很小，部分层甚至 final loss 高于 initial loss。该路径已归档，当前不再放在主 runner 中继续维护。
-
-4. 保护最后一层全精度没有明显收益，说明“只保护高层整层”不是主要突破口。tail-token activation 保护有一次全量结果看起来更好，但需要复跑和更细粒度 ablation 判断是否稳定。
-
-5. 激活分布可视化显示，高层存在明显 channel-wise 异常值，并且某些异常 channel 在历史 SID session 区间有结构化差异；token-wise 的整体异常不如 channel-wise 明显。
-
-6. beam search 仍然基于全 vocab logits 生成，而不是只限制 SID logits。OneRec 还有文本性推荐理解任务，因此直接限制 vocab 空间不适合作为通用推理实现。
-
-7. 新增的 `sid_tf_nll` / `sid_tf_ppl` 可以作为辅助诊断指标：如果 W8A8 和 SQ 的 pass/recall 区分不开，可以观察真实 SID token 的 teacher-forcing likelihood 是否有差异。
-
-## 已知风险和注意事项
-
-- 当前 `results/` 里混有历史实验、失败实验、subset 实验和全量实验，不能简单按目录名下结论。
-- custom beam / staged prefill-decode 实验已被判定和 HF generate 不可直接比较，相关结果只用于排查，不应作为论文主结果。
-- 服务器当前 namespace 配置可能导致 Codex sandbox 命令失败，必要时需要提权执行读写命令。
-- batch 推理在当前实现和 OpenOneRec 风格下不一定更快；单条 HF generate 目前更接近稳定设置。
-- 如果开启 `COMPUTE_SID_PPL=1`，每条样本会额外做 teacher-forcing forward，评测耗时会增加。
-
-## 后续研究方向
-
-### TODO: GPTQ sequential quantized-input calibration
-
-当前 `apply_gptq_fp8_layers` 的 GPTQ 校准是 teacher-block 推进：每层收集 Hessian 后，用原始 `teacher_block` 重新跑 calib 输入得到 `next_fp_inputs`，再把当前层替换成 `quant_block`。因此下一层 Hessian 使用的是浮点 teacher 分布下的 layer input，而不是前面已量化层输出后的真实推理分布。
-
-待尝试实现标准 sequential GPTQ 版本：量化完当前 block 后，用已安装 shared-input activation quantization 的 `quant_block` 跑一遍当前 `fp_inputs`，得到 `next_quant_inputs`，作为下一层 GPTQ Hessian 收集输入。这样后层校准的 `X` 会包含前层 W8A8 / GPTQ 量化误差，更接近实际推理时的分布。
-
-需要注意：这种方式可能更贴近部署，但也可能把前层量化误差噪声传给后层 Hessian。建议做成独立 ablation 开关，对比当前 teacher-block 推进版本：
-
-- `teacher_input_gptq`: 当前实现，下一层输入来自 FP teacher block 输出。
-- `sequential_quant_input_gptq`: 待实现，下一层输入来自 quantized block 输出。
-
-优先比较 full calib1024/test 上的 `weighted_gptq_fp8_w8a8`、`grad_weighted_gptq_fp8_w8a8` 和 `weighted_gptq_fp8_w8a8_tail1`。
-
-### 1. 用 SID teacher-forcing 指标诊断 SQ 是否真的无效
-
-先对 W8A8 baseline、SmoothQuant W8A8 跑同样的 `COMPUTE_SID_PPL=1`，比较：
-
-- `sid_tf_nll`
-- `sid_tf_ppl`
-- pass@k / recall@k
-
-如果 SQ 能降低 SID NLL 但不提升 recall，说明 ranking/top-k 机制和 likelihood 仍有 gap；如果 SID NLL 也没有降低，则 SQ 对推荐输出本身确实帮助有限。LWC+LET 可作为归档负结果在论文讨论中引用，但不再作为当前代码主线。
-
-### 2. 从推荐目标反推量化目标
-
-当前普通 block MSE 太弱。更合理的方向是围绕 SID logits / SID margin / top-k ranking 设计目标，例如：
-
-- teacher-forcing SID token NLL 加权的 layer/block reconstruction；
-- 对候选 SID logits 的 margin 保真；
-- top-k SID 路径 ranking stability；
-- 对影响 SID margin 的 channel/group 做混合精度或保护。
-
-难点是 SID 决策信号跨层分布，不一定集中在某个显式 channel，需要用梯度或敏感度来定位。
-
-### 3. 继续研究 activation 异常值结构
-
-已有可视化显示：高层异常 channel 更明显，并且历史 SID session 区间有结构化差异。可以继续沿着以下问题看：
-
-- 哪些 channel 对 SID logits margin 更敏感；
-- session 区间的锯齿状模式是否对应 `<s_a_*>/<s_b_*>/<s_c_*>` token 类型；
-- 异常 channel 是否可以通过 token-aware 或 SID-aware scaling 单独处理。
-
-### 4. 复核 tail-token activation 保护
-
-`w8a8_tail1` 当前全量结果好于 baseline，但需要严格复跑：
-
-- 同一数据、同一模型、同一 runner；
-- tail_tokens=0/1/2/3 ablation；
-- 只保护 prefill 最后 token vs decode token；
-- 是否影响 total time 和显存。
-
-如果稳定，这可能比 SmoothQuant/LWT/LET 更贴近推荐生成机制。
-
-### 5. 考虑推荐专用 PTQ，而不是继续只做平滑
-
-SmoothQuant、LET、LWT 的本质仍是降低量化误差或平滑异常值；当前证据显示它们上限可能不高。后续可以把重点转向推荐任务特有的信息：SID token、历史 session、候选 item margin、beam path 稳定性、PID 映射后的排序稳定性等。
-
-### 6. beam-path stability PTQ
-
-  推荐最终看 top-k beams，所以可以直接让量化模型复现 FP 模型的 beam expansion：
-
-  step 1: preserve top SID-a candidates
-  step 2: preserve each prefix 下的 SID-b ranking
-  step 3: preserve SID-c ranking / item mapping
-
-  这比 PPL 更贴近 pass@32/recall@32。SAPO 最近也强调 SID 生成里 exact-match outcome reward 很稀疏，应该按 reasoning step / SID token 做 credit assignment，而不是把整个序列混在一起。(SAPO
-  (https://arxiv.org/abs/2605.17648)) 这个思想可以迁移到量化：按 SID step 分配量化误差预算。
-
-### 7. SID-position-aware precision allocation
-
-  SID 是层级语义 ID。TIGER 里也强调 Semantic ID 是由多个 codeword 组成，相似 item 会共享前缀，早期 token 更像 coarse semantic routing，后续 token refine item。(TIGER
-  (https://papers.neurips.cc/paper_files/paper/2023/file/20dcab0f14046a5c6b02b61da9f13229-Paper-Conference.pdf))
-
-  所以 s_a 错了可能直接走到错误大类，s_b/s_c 错了影响更细。可以做：
-
-  s_a 位置更高精度 / 更强校准权重
-  s_b 次之
-  s_c 再次
-
-  这就是推荐任务特有的“token position importance”，不是普通 LLM 的均匀 next-token objective。
-
-### 8. SID-gradient channel protection
-
-  AWQ 的核心观察是：不是所有 weight 都同等重要，重要 channel 应该从 activation 分布判断。(AWQ (https://arxiv.org/abs/2306.00978)) 你可以把它改成推荐版本：
-
-  不是 activation 大的 channel 重要
-  而是对 SID margin / beam ranking 敏感的 channel 重要
-
-  用 teacher-forcing SID loss 或 SID margin loss 反传，得到每层 channel saliency，然后：
-
-  - top channel 不量化 activation；
-  - 或 top channel 用更小 clipping；
-  - 或 top group 用 W8A16 / higher precision；
-  - 或对这些 channel 做更激进的 scale equalization。
-
-  这个方向比“平滑异常值”更有推荐味道。
-
-
 ## 基于MLLM量化的相关尝试
 如果将当前的目标量化模型——推荐大模型当成多模态大模型，可以找到一个大概的对应关系，SID token相比大模型原本的token其实是异源token，所以一定程度上可以当成一个输入模态，从而借鉴MLLM领域量化的思路和技术。
 
@@ -345,3 +212,364 @@ SmoothQuant、LET、LWT 的本质仍是降低量化误差或平滑异常值；�
   2. SID内部token也有梯度区别，历史交互和感兴趣视频的sid token也有梯度区别
 
 但是目前的卡点是，我有了这些信息，但是我不知道如何设计算法，因为之前的SQ算法没有收益，所以下一步不知道怎么进行
+
+## 当前主线方案总结：GPTQ token 加权 weight 量化 + dynamic activation + tail1 / 2026-06-17
+
+当前最重要的主线组合是：`grad_weighted_gptq_fp8_w8a8_tail1`，也就是 **v3 逐层梯度 group token 加权 GPTQ weight 量化 + activation per-token dynamic fake quant + tail1 BF16 activation 保护**。这个方案的核心思想是：weight 量化仍然用 GPTQ 的逐层二阶误差补偿框架，但在构造 GPTQ Hessian 时，不把所有校准 token 等权看待，而是根据推荐 prompt 中不同 token 类型的重要性，对校准激活 `X` 做 token 加权；推理阶段再配合 shared-input 的 dynamic activation quant，并把 `<|sid_begin|>` 和 decode 阶段 activation 保留为原始 BF16。
+
+### 1. 整体 pipeline
+
+当前 runner 是 `fake_quant_learnable/run_m1_onerec_ad.py`。主要 mode 包括：
+
+- `gptq_fp8_w8a8`：普通 GPTQ weight + activation per-token dynamic。
+- `weighted_gptq_fp8_w8a8`：手工 token group 加权 GPTQ，不带 tail1。
+- `weighted_gptq_fp8_w8a8_tail1`：手工 token group 加权 GPTQ，带 tail1。
+- `grad_weighted_gptq_fp8_w8a8`：当前已经改为 v3 的逐层梯度 group token 加权 GPTQ，不带 tail1。
+- `grad_weighted_gptq_fp8_w8a8_tail1`：当前最关注的组合，v3 逐层梯度 group token 加权 GPTQ，带 tail1。
+
+默认配置里 activation 使用 `act_quant="per_token"`，activation mode 使用 `act_quant_mode="shared_input"`，GPTQ 默认 `damp_percent=0.01`、`block_size=128`。calib 默认使用 `benchmark-data-calib1024` 下对应 task 的 `*_calib.parquet`，如果不存在 calib split 就回退到 test split。每条 calib 样本会先用 `format_prompt(sample["prompt"], prompt_token)` 把任务 prompt 和 generation prompt token 拼起来；当前 item prediction 的 prompt token 通常是 `<|sid_begin|>`，因此 prefill 最后一个 token 就是即将生成 SID 的起始标记。
+
+逐层（layer）量化时，`apply_gptq_fp8_layers` 对每个被选中的 Transformer block 做：
+
+1. 用 hooks 捕获该层的 FP teacher 输入 `fp_inputs`。
+2. 在该层内部所有 `nn.Linear` 上收集 GPTQ Hessian。
+3. 用 FP teacher block 继续前传，得到下一层的 FP 输入。
+4. deepcopy 当前 block，基于 Hessian 做 GPTQ weight fake quant，然后替换成 `GPTQFakeQuantLinear`。
+5. 如果是 shared-input activation quant，就 patch Qwen3 attention/MLP forward，让共享输入只 quantize 一次。
+
+注意：当前实现仍然是 teacher-block 推进，下一层 Hessian 的输入来自 FP teacher block 输出，不是来自已量化 block 的输出。这个 sequential quantized-input GPTQ 已经作为 TODO 记录过，后续可以单独做 ablation。
+
+### 2. GPTQ weight 量化逻辑
+
+GPTQ 的 Hessian 收集在 `fake_quant_learnable/gptq.py::collect_gptq_hessians`。对每个 Linear，hook 到它的输入 `x`，把最后一维当作 hidden/channel 维，其余 batch/seq 维 flatten 成二维矩阵：
+
+```text
+X in R^{N x d_in}
+```
+
+普通 GPTQ 使用：
+
+```text
+H = (X^T X) / N
+```
+
+token 加权版本使用：
+
+```text
+H = (X^T diag(w) X) / sum(w)
+```
+
+其中 `w` 是形状和 `x.shape[:-1]` 对齐的 token 权重。也就是说，token 加权不会改变模型 forward，也不会改变推理时的 logits；它只改变 GPTQ 校准期间看到的二阶输入分布，让 GPTQ 在做 weight 量化误差补偿时更偏向保护高权重 token 对应的输入方向。
+
+weight 量化本身在 `gptq_fp8_quantize_weight` 中完成。当前逻辑是：
+
+1. 对 Hessian 做对称化：`H = 0.5 * (H + H.T)`。
+2. 对 dead channel 做处理：如果 Hessian diagonal 小于 eps，则把该 channel 的 Hessian diag 设为 1，并把对应 weight column 置 0。
+3. 加 damp：`H_ii += damp_percent * mean(live_diag)`，默认 `damp_percent=0.01`。
+4. 用 Cholesky 求 Hessian inverse factor，失败时逐步加 jitter，增强 8B 上的稳定性。
+5. FP8 weight scale 是按 output channel 计算的 row-wise scale：
+
+```text
+scale_row = max(abs(W_row)) / 448
+```
+
+6. 按 GPTQ 的列顺序做 block-wise error compensation，默认 `block_size=128`。每列先吸附到 FP8 E4M3 fake-quant 网格，再把 `(w-q)/d` 的误差传播到同一 block 后续列，以及 block 之后的列。
+
+当前仍是 fake quant：`weight_qdq` 存的是量化再反量化后的 tensor，并注册到 `GPTQFakeQuantLinear` buffer 中；它模拟真实部署中的 FP8 数值误差，但 PyTorch fake 路径本身不会吃到真实 FP8 GEMM 的吞吐收益。
+
+### 3. token 加权方案一：手工 prompt-role group 加权
+
+手工加权由 `fake_quant_learnable/token_weights.py::PromptTokenWeightConfig` 定义，默认 raw 权重是：
+
+| prompt role | raw weight |
+|---|---:|
+| text | 10.0 |
+| history_sid | 1.0 |
+| interest_sid | 5.0 |
+| sid_boundary | 2.0 |
+
+prompt role 的识别方式是：
+
+- SID item 匹配形如 `<|sid_begin|><s_a_*><s_b_*><s_c_*><|sid_end|>` 的片段。
+- `<s_a_*>/<s_b_*>/<s_c_*>` 属于 SID code token。
+- `<|sid_begin|>` 和 `<|sid_end|>` 属于 `sid_boundary`。
+- SID item 会按 prompt 中相邻 SID item 之间是否有文字/数字/中文 section break 分组；第一组 SID 作为 `history_sid`，后续组作为 `interest_sid`。
+- 其他 token 都作为 `text`。
+
+优先使用 tokenizer 的 `offset_mapping` 把字符 span 映射到 token；如果 tokenizer 不支持 offset，就 fallback 到逐 token decode，此时只能识别 SID boundary 和 SID code，SID code 默认归到 history SID，interest SID 区分会变弱。
+
+手工权重默认会对每条样本的有效 token 做 mean normalize：
+
+```text
+w_norm = w_raw / mean_valid(w_raw)
+```
+
+这样做的目的不是改变每条样本对 Hessian 的总贡献，而是改变同一样本内部不同 token 类型的相对权重。手工方案对应 mode：
+
+- `weighted_gptq_fp8_w8a8`
+- `weighted_gptq_fp8_w8a8_tail1`
+
+### 4. token 加权方案二：梯度 token 粒度加权
+
+梯度 token 粒度加权是 v2 的原始思路，实现在 `fake_quant_learnable/gradient_weights.py::collect_gradient_token_weight_batches_by_layer`。它不直接用手工 prompt role 权重，而是用 teacher-forced SID 预测 loss 的梯度来估计每个 token 对推荐 SID 决策的敏感度。
+
+对每条 calib 样本，先从 ground truth 中取第一个 SID item，再取它 tokenization 后的第一个 token，也就是第一个 ground-truth `s_a` token id。然后在完整 prompt 的最后一个位置，也就是 `<|sid_begin|>` 位置上，计算 cross entropy：
+
+```text
+L = CE(logits[last_prompt_position], first_ground_truth_s_a)
+```
+
+在指定 layer 的输入 hidden state 上取梯度。第 l 层第 t 个 token 的敏感度定义为：
+
+```text
+s_{l,t} = mean_c | h_{l,t,c} * dL / dh_{l,t,c} |
+```
+
+代码中会先把模型参数 `requires_grad` 关掉，只保留被捕获的 hidden state 需要梯度。最小被选中层的输入会 detach 后重新 `requires_grad_(True)`，其他选中层用 `retain_grad()` 记录梯度。每条样本 forward 后对上述 CE loss backward，然后得到每层每个 token 的 sensitivity。
+
+梯度权重还会做归一化和截断，默认 `GradientTokenWeightConfig` 为：
+
+| 参数 | 默认值 | 作用 |
+|---|---:|---|
+| clip_percentile | 99.0 | 对有效 token 的 sensitivity 做 99 分位截断，避免极端 token 主导 Hessian |
+| weight_floor | 0.05 | 给有效 token 设置最小权重，避免某些 token 完全消失 |
+| normalize_mean | True | 有效 token 均值归一化到 1 |
+| eps | 1e-12 | 数值稳定 |
+
+v2 token 粒度版本的优点是最细，可以为同一 prompt 内每个 token 给不同权重；缺点也明显：梯度信号噪声大，calib 样本之间分布波动大，而且过细粒度的 token 权重可能让 Hessian 过拟合某些局部 token，而不是稳定地反映推荐 prompt 的结构。之前实验中它的整体效果没有超过手工 group 权重，基本接近 GPTQ+dynamic activation 的水平，但在 @32 上有一定提升。
+
+### 5. token 加权方案三：v3 逐层梯度 group 加权
+
+v3 是当前主线，也就是 `grad_weighted_gptq_fp8_w8a8` 和 `grad_weighted_gptq_fp8_w8a8_tail1` 现在实际使用的版本。代码路径是：
+
+```text
+collect_gradient_group_token_weight_batches_by_layer
+  -> collect_gradient_token_weight_batches_by_layer
+  -> group_token_weight_batches_by_layer
+```
+
+它分两步：
+
+1. 先完全沿用 v2 的 teacher-forced gradient sensitivity，得到每层、每条 calib 样本、每个 token 的细粒度梯度权重。
+2. 再使用和手工方案完全一致的 prompt role 分组，把 token 权重按 layer 和 group 聚合成 group mean，然后再回填到每个 token 上。
+
+也就是说，v3 最终传给 GPTQ Hessian 的仍然是 per-token weight tensor，所以不需要改 GPTQ 接口；但同一个 layer 内，属于同一个 prompt role group 的 token 会共享一个由 calib 梯度统计出来的权重。形式上可以理解为：
+
+```text
+w_{l,t} = mean_{sample/token in group(t)} normalize(s_{l,t})
+```
+
+group 仍然是四类：
+
+- `text`
+- `history_sid`
+- `interest_sid`
+- `sid_boundary`
+
+v3 和手工 group 的区别是：手工 group 权重是全层共享的一组固定 prior；v3 的 group 权重是用 calib 梯度算出来的，而且每一层都可以不同。v3 和 v2 token 粒度的区别是：v2 保留每个 token 的细粒度波动，v3 把这些波动压缩成 layer-wise group 均值。因此 v3 是介于“全手工 group prior”和“完全 token 粒度梯度”之间的折中版本：既保留推荐 prompt role 的结构约束，又让不同 layer 的重要性由梯度数据决定。
+
+当前实现是纯梯度 group 权重，没有和手工权重做 shrinkage 或 prior 融合。之前 probe 显示，v3 相比手工权重通常会抬高 `history_sid`，降低部分层的 `text`，并在中后层显著提高 `interest_sid`，这说明它确实捕捉到了和手工 prior 不同的 layer-wise 推荐信号。
+
+### 6. activation per-token dynamic quantization
+
+activation dynamic quantization 在 `fake_quant_learnable/quant.py::activation_per_token_qdq_forward`。对 activation tensor 的最后一维 hidden dimension 做 per-token absmax：
+
+```text
+scale_t = max_c |x_{t,c}| / 448
+q_t = clamp(x_t / scale_t, -448, 448).to(torch.float8_e4m3fn)
+x_qdq_t = q_t.float() * scale_t
+```
+
+输出再 cast 回原始 dtype，所以 fake quant 下模型后续计算仍在原 dtype 中进行。这个逻辑模拟的是真实部署中 activation runtime per-token scale + FP8 E4M3 的数值误差。
+
+当前默认 `act_quant_mode="shared_input"`，因此不是每个 Linear 各自独立 quantize 输入，而是对 Qwen3 block 中共享同一个输入的 Linear 做一次 shared activation QDQ：
+
+- attention 中 `q_proj/k_proj/v_proj` 共享 `hidden_states` 的一次 QDQ。
+- attention 中 `o_proj` 对 attention output 做一次 QDQ。
+- MLP 中 `gate_proj/up_proj` 共享 MLP 输入的一次 QDQ。
+- MLP 中 `down_proj` 对 `act(gate) * up` 的中间结果做一次 QDQ。
+
+这样更接近真实 fused/shared-input 部署，也避免 q/k/v 或 gate/up 对同一份输入重复产生不同 fake quant 噪声。
+
+### 7. tail1 BF16 activation 保护
+
+tail1 保护在 `fake_quant_learnable/quant.py::activation_per_token_qdq_forward_tail_protected` 和 `GPTQFakeQuantLinear.activation_tail_tokens` 中实现。逻辑是：先正常做 per-token activation QDQ，然后把最后 `tail_tokens` 个序列位置恢复为原始 activation：
+
+```text
+x_qdq[..., -tail_tokens:, :] = x_original[..., -tail_tokens:, :]
+```
+
+当前 tail1 mode 中 `activation_tail_tokens=1`。它的含义是：
+
+- prefill 阶段：保护 prompt 的最后一个 token。由于 item prediction prompt 后面会 append `<|sid_begin|>`，所以这里保护的是最后的 `<|sid_begin|>` activation。
+- decode 阶段：KV-cache decode 输入通常是 `[batch*beam, 1, hidden]`，序列长度为 1；tail1 会覆盖整个 decode step，因此 decode 阶段 activation 等价于保持 BF16/original dtype，不做 activation FP8 QDQ。
+
+shared-input 路径里，`_shared_prepare_input` 会从第一个 quant Linear 读取 `activation_tail_tokens`。如果大于 0，就对 shared activation 输入执行 tail-protected QDQ。因此 q/k/v、gate/up、o/down 这些 shared-input 位置也会遵循同样的 tail1 保护，而不是只在普通 per-linear wrapper 中生效。
+
+需要强调的是：tail1 只保护 activation，不取消 GPTQ weight 量化。也就是说，当前最优组合仍然是 GPTQ FP8 fake-quant weight；只是 prefill 最后 token 和 decode token 的 activation 不承受 FP8 dynamic activation QDQ 误差。从推荐生成机制看，这两个位置很关键：`<|sid_begin|>` 直接决定第一个 SID token `s_a` 的分布，decode 阶段则直接决定后续 `s_b/s_c` 和 beam 扩展。
+
+### 8. 当前方案的定位
+
+当前主线方法可以概括为：
+
+```text
+weight side:
+  GPTQ FP8 E4M3 weight fake quant
+  + Hessian token weighting
+  + v3 layer-wise gradient group prompt-role weights
+
+activation side:
+  dynamic per-token FP8 E4M3 fake quant
+  + Qwen3 attention/MLP shared-input quantization
+  + tail1 BF16/original activation protection
+```
+
+它和 naive W8A8 的主要区别不在 activation quant 公式，而在 weight 量化校准目标：naive weight 是直接按 output channel scale 吸附到 FP8 网格；GPTQ 会用校准激活 Hessian 做误差补偿；token 加权 GPTQ 又进一步把 Hessian 从普通 `X^T X` 改成推荐 prompt token-aware 的 `X^T diag(w) X`。因此它本质上是在 weight PTQ 阶段把推荐任务里更关键的 token 方向显式写进优化目标。
+
+当前最应该继续报告和复跑的主线实验是：
+
+```bash
+python3 -m fake_quant_learnable.run_m1_onerec_ad \
+  --mode grad_weighted_gptq_fp8_w8a8_tail1 \
+  --model_path /home/guowei/OneRec-1.7B/ \
+  --data_dir data/onerec_data/benchmark-data-calib1024 \
+  --output_dir fake_quant_learnable/results/<experiment_name> \
+  --device cuda:0 \
+  --calib_sample_size 1024 \
+  --eval_sample_size full \
+  --overwrite \
+  --evaluate
+```
+
+对于对照实验，需要同时保留：
+
+- `baseline_w8a8`：naive W8A8。
+- `gptq_fp8_w8a8`：不加 token weight 的 GPTQ。
+- `weighted_gptq_fp8_w8a8`：手工 group 权重，不带 tail1。
+- `weighted_gptq_fp8_w8a8_tail1`：手工 group 权重 + tail1。
+- `grad_weighted_gptq_fp8_w8a8`：v3 梯度 group 权重，不带 tail1。
+- `grad_weighted_gptq_fp8_w8a8_tail1`：v3 梯度 group 权重 + tail1。
+
+这样可以把收益拆成三块看：GPTQ weight 量化本身的收益、token-aware Hessian 的收益、tail1 activation 保护的收益。
+
+## 真实 FP8 推理落地路线 / 2026-06-17
+
+当前 `fake_quant_learnable` 的主线实现仍然是 fake quant：weight 和 activation 都会模拟 FP8 E4M3 的量化误差，但 Linear 计算本身仍然走 `F.linear`，输入和权重在 matmul 时不是常驻 FP8 数据格式。因此它可以评估精度影响，但不能直接证明真实部署时延收益。
+
+下一步真实 FP8 runtime 的目标是把离线量化结果转成真正可执行的低精度路径：
+
+```text
+offline:
+  FP/BF16 weight -> FP8 weight + FP32 scale
+
+runtime:
+  BF16 activation -> dynamic FP8 activation + FP32 scale
+  FP8 activation x FP8 weight -> BF16 output
+```
+
+在当前 PyTorch 环境中，`torch._scaled_mm` 可以表达我们现有 scale 粒度：
+
+- activation per-token scale: `[batch, seq, 1]` flatten 后变成 GEMM 侧的 `scale_a = [M, 1]`。
+- weight per-output-channel scale: Linear weight `[N, K]` 的 scale `[N, 1]` 转成 GEMM 侧的 `scale_b = [1, N]`。
+- `_scaled_mm` 的输入为 `A_fp8=[M,K]` 和 `B_fp8=[K,N]`，输出使用 BF16。
+
+因此，scale reshape 和 FP32 cast 本身不是主要难点。主要工程难点在于：FP8 weight 常驻保存、`_scaled_mm` 所需的权重 layout、activation dynamic quant 的额外开销、shared-input/fused projection、tail1 的 BF16 分流，以及 beamsearch/generate 端到端开销。
+
+### Stage 1: real naive W8A8
+
+第一阶段先实现最朴素的真实 FP8 W8A8 runtime，不引入 GPTQ、token weight 或 tail1。目标是验证 real FP8 backend 本身是否能跑通，以及 fake quant 的数值结果能否迁移到真实 `_scaled_mm` 路径。
+
+实现要点：
+
+- 对每个 Linear 的原始 weight 做 per-output-channel FP8 quant。
+- 保存 `weight_fp8` 和 `weight_scale`，而不是只保存 `weight_qdq`。
+- forward 中把 activation flatten 为 `[M, K]`，按 per-token 动态计算 `scale_a=[M,1]`，cast 到 FP8。
+- 使用 `torch._scaled_mm(x_fp8, weight_fp8.t(), scale_a, scale_b, out_dtype=torch.bfloat16)` 计算。
+- 第一版每个 Linear 独立实现，不强制做 q/k/v 或 gate/up fusion。
+- 不做 tail1，避免一开始引入 FP8/BF16 混合路径。
+
+成功标准：
+
+- 能完整跑一次 OneRec eval。
+- real naive W8A8 的指标和当前 fake `baseline_w8a8` 接近。
+- 单 Linear benchmark 中 FP8 GEMM 相比 BF16 matmul 有明确收益。
+- 端到端耗时至少不能明显劣化；如果劣化，需要 profile activation cast、layout 转换和 Python 调度。
+
+### Stage 2: real GPTQ 原版
+
+第二阶段保持 Stage 1 的 runtime 不变，只把 weight 来源从 naive RTN 替换为 GPTQ 量化后的 FP8 weight。这里的关键是离线 GPTQ 不再只返回 `weight_qdq`，而是额外导出：
+
+```text
+weight_fp8
+weight_scale
+optional weight_qdq_for_debug
+```
+
+runtime 仍然统一走 `RealFP8Linear`。这样可以把算法收益和 runtime 实现解耦。
+
+成功标准：
+
+- real GPTQ 的指标接近当前 fake `gptq_fp8_w8a8`。
+- real GPTQ 相比 real naive W8A8 有可观察的精度优势。
+- 不因为 GPTQ weight 来源改变而引入额外 forward 开销。
+
+### Stage 3: real weighted GPTQ
+
+第三阶段再接入 token-aware GPTQ，包括手工 group 权重和 v3 逐层梯度 group 权重。这个阶段理论上不需要改变 runtime，因为 token weighting 只影响离线 GPTQ 的 Hessian 和权重搜索，最终导出的仍然是同一种格式：
+
+```text
+weight_fp8 + weight_scale
+```
+
+推荐保留的 ablation 顺序：
+
+- `real_naive_w8a8`
+- `real_gptq_fp8_w8a8`
+- `real_weighted_gptq_fp8_w8a8`
+- `real_grad_weighted_gptq_fp8_w8a8`
+
+成功标准：
+
+- weighted GPTQ 的 real FP8 指标趋势和当前 fake quant 结果一致。
+- 手工权重、v3 梯度 group 权重的收益能在真实 runtime 下复现。
+- runtime 文件和量化算法文件边界清晰：加权逻辑不侵入 `RealFP8Linear`。
+
+### Stage 4: real weighted GPTQ + tail1
+
+最后再加入 tail1，因为 tail1 会引入混合精度路径：
+
+```text
+non-tail token:
+  FP8 activation + FP8 weight -> _scaled_mm
+
+tail token:
+  BF16/original activation + quantized/dequantized or BF16 fallback weight -> BF16 matmul
+```
+
+在当前推荐生成场景中，tail1 的语义尤其特殊：
+
+- prefill 阶段保护最后一个 `<|sid_begin|>` token。
+- decode 阶段常见输入长度为 1，因此严格 tail1 会让 decode token 的 activation 不走 FP8 dynamic quant。
+
+因此 tail1 很可能提高精度，但会削弱 decode 阶段的 FP8 速度收益。它应该放在最后实现，避免在还没验证 real FP8 backend 前就把性能问题复杂化。
+
+成功标准：
+
+- real tail1 指标接近当前 fake `*_tail1` 的提升趋势。
+- prefill 非 tail token 仍然走 FP8 `_scaled_mm`。
+- tail token 的 BF16 fallback 路径数值明确、开销可测。
+- 报告中单独拆分 prefill、decode、beamsearch/topk、lm_head 等耗时，避免只用总耗时判断 FP8 是否有效。
+
+### 推荐执行顺序
+
+当前最稳的推进方式是：
+
+```text
+1. real_naive_w8a8
+2. real_gptq_fp8_w8a8
+3. real_weighted_gptq_fp8_w8a8 / real_grad_weighted_gptq_fp8_w8a8
+4. real_grad_weighted_gptq_fp8_w8a8_tail1
+```
+
+这个顺序的好处是每一步只新增一个变量：先验证 runtime，再验证 GPTQ，再验证 token-aware Hessian，最后验证 tail1。这样可以避免把真实 FP8 kernel、GPTQ 量化收益、token weighting 收益和 tail1 精度/速度 tradeoff 混在一起。
+

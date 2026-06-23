@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import torch
+import fake_quant_learnable.run_m1_onerec_ad as runner
 import torch.nn as nn
 
-from fake_quant.smoothquant.core import compute_smooth_scale
 from fake_quant_learnable.apply import apply_baseline_w8a8
 from fake_quant_learnable.gptq import _stable_cholesky_inverse_factor, gptq_fp8_quantize_weight
 from fake_quant_learnable.modules import (
@@ -12,16 +12,20 @@ from fake_quant_learnable.modules import (
     SmoothQuantFakeQuantLinear,
 )
 from fake_quant_learnable.quant import FP8_MAX, fp8_e4m3_qdq_forward, fp8_weight_per_channel_forward
+from fake_quant_learnable.support.smoothquant_core import compute_smooth_scale
 from fake_quant_learnable.support.smoothquant_runtime import collect_smoothquant_scales
 from fake_quant_learnable.run_m1_onerec_ad import (
     apply_baseline_layers,
     apply_gptq_fp8_layers,
     apply_smoothquant_layers,
     capture_layer_input_batches,
+    default_calib_split,
     get_transformer_layers,
     load_ad_data,
+    maybe_evaluate,
     parse_args,
     parse_layer_indices,
+    result_path,
 )
 
 
@@ -150,6 +154,7 @@ def test_parse_args_attaches_compact_fixed_defaults(monkeypatch) -> None:
 
     args = parse_args()
 
+    assert args.task == "ad"
     assert args.mode == "baseline_w8a8"
     assert args.model_path == "/home/guowei/OneRec-1.7B/"
     assert args.data_dir == "data/onerec_data/benchmark-data-calib1024"
@@ -173,6 +178,26 @@ def test_parse_args_accepts_gptq_fp8_w8a8_mode(monkeypatch) -> None:
     assert args.mode == "gptq_fp8_w8a8"
     assert args.gptq_damp_percent == 0.01
     assert args.gptq_block_size == 128
+
+
+def test_parse_args_accepts_full_precision_mode(monkeypatch) -> None:
+    monkeypatch.setattr("sys.argv", ["prog", "--mode", "full_precision"])
+
+    args = parse_args()
+
+    assert args.mode == "full_precision"
+
+
+def test_parse_args_accepts_product_task_and_grad_tail1_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        ["prog", "--task", "product", "--mode", "grad_weighted_gptq_fp8_w8a8_tail1"],
+    )
+
+    args = parse_args()
+
+    assert args.task == "product"
+    assert args.mode == "grad_weighted_gptq_fp8_w8a8_tail1"
 
 
 def test_get_transformer_layers_reads_model_model_layers() -> None:
@@ -212,6 +237,64 @@ def test_load_ad_data_applies_offset_after_loading_enough_samples(monkeypatch) -
 
     assert created_loaders[0].requests == [("test", 8)]
     assert list(data.keys()) == ["sample_5", "sample_6", "sample_7"]
+
+
+def test_load_task_data_passes_requested_task_to_loader(monkeypatch) -> None:
+    created_loader_kwargs = []
+
+    class DummyLoader:
+        def load_data(self, split: str, sample_size: int):
+            return {f"sample_{idx}": {"prompt": str(idx)} for idx in range(sample_size)}
+
+    def fake_get_loader(**kwargs):
+        created_loader_kwargs.append(kwargs)
+        return DummyLoader()
+
+    monkeypatch.setattr("fake_quant_learnable.run_m1_onerec_ad.get_loader", fake_get_loader)
+
+    data = runner.load_task_data(
+        task_name="video",
+        tokenizer=None,
+        data_dir="data/onerec_data/benchmark-data-calib1024",
+        split="calib",
+        sample_size=2,
+    )
+
+    assert created_loader_kwargs[0]["task_name"] == "video"
+    assert list(data.keys()) == ["sample_0", "sample_1"]
+
+
+def test_default_calib_split_is_task_specific(tmp_path) -> None:
+    data_dir = tmp_path / "benchmark-data-calib1024"
+    (data_dir / "product").mkdir(parents=True)
+    (data_dir / "product" / "product_calib.parquet").write_bytes(b"placeholder")
+
+    assert default_calib_split(data_dir, "test", task_name="product") == "calib"
+    assert default_calib_split(data_dir, "test", task_name="video") == "test"
+
+
+def test_result_path_uses_task_name() -> None:
+    path = result_path("fake_quant_learnable/results/example", "OneRec-1.7B", "product", "test")
+
+    assert str(path).endswith("fake_quant_learnable/results/example/OneRec-1.7B/product/test_generated.json")
+
+
+def test_maybe_evaluate_passes_requested_task(monkeypatch) -> None:
+    calls = []
+
+    def fake_evaluate_dev(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("fake_quant_learnable.run_m1_onerec_ad.Benchmark.evaluate_dev", fake_evaluate_dev)
+
+    maybe_evaluate(
+        output_dir="fake_quant_learnable/results/example",
+        data_dir="data/onerec_data/benchmark-data-calib1024",
+        overwrite=True,
+        task_name="video",
+    )
+
+    assert calls[0]["task_types"] == ["video"]
 
 
 def test_capture_layer_input_batches_records_args_and_kwargs() -> None:

@@ -4,6 +4,8 @@ This run extends the MQuant Figure 1(b)-style probe to full OneRec AD prompts. H
 
 Run command:
 
+> Legacy reproduction note: this command referenced the removed `fake_quant/` probe package. Keep this README as historical provenance; rerunning requires restoring or rewriting the old probe.
+
 ```bash
 python3 -m fake_quant.probes.activation_probe.plot_token_modality_distribution \
   --device cuda:0 \

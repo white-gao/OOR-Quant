@@ -4,6 +4,8 @@ This probe follows the idea of MQuant Figure 1(b): compare activation distributi
 
 Run command:
 
+> Legacy reproduction note: this command referenced the removed `fake_quant/` probe package. Keep this README as historical provenance; rerunning requires restoring or rewriting the old probe.
+
 ```bash
 python3 -m fake_quant.probes.activation_probe.plot_token_modality_distribution \
   --device cuda:6 \

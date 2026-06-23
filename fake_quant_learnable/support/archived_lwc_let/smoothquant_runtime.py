@@ -10,7 +10,7 @@ from .calibrate_m1_lwt import Batch, _batch_to_args_kwargs
 from .modules import BaselineFakeQuantLinear, FrozenLearnedFakeQuantLinear, LearnableFakeQuantLinear
 from .quant import ActQuant, fp8_weight_per_channel_forward
 from .runtime_utils import _module_device, _move_tree_to_device
-from fake_quant.smoothquant.core import compute_smooth_scale, smooth_linear_weight
+from fake_quant_learnable.support.smoothquant_core import compute_smooth_scale, smooth_linear_weight
 
 
 DEFAULT_SMOOTHQUANT_ALPHA = 0.5

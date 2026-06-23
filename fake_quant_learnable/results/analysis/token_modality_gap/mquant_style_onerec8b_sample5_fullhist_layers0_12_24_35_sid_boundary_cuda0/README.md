@@ -4,6 +4,8 @@ This directory contains MQuant Fig.1(b)-style activation distribution probes for
 
 ## Command
 
+> Legacy reproduction note: this command referenced the removed `fake_quant/` probe package. Keep this README as historical provenance; rerunning requires restoring or rewriting the old probe.
+
 ```bash
 python3 -m fake_quant.probes.activation_probe.plot_token_modality_distribution \
   --model_path /home/guowei/OneRec-8B/ \

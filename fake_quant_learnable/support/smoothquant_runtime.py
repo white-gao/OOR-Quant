@@ -5,7 +5,7 @@ from typing import Any, Mapping, Sequence
 import torch
 import torch.nn as nn
 
-from fake_quant.smoothquant.core import compute_smooth_scale, smooth_linear_weight
+from .smoothquant_core import compute_smooth_scale, smooth_linear_weight
 
 from ..apply import SmoothScope, should_apply_smooth_transform
 from ..modules import BaselineFakeQuantLinear, SmoothQuantFakeQuantLinear
