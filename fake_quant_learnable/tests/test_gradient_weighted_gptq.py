@@ -54,6 +54,27 @@ class ToyGradModel(nn.Module):
         return SimpleNamespace(logits=hidden)
 
 
+class ToyTokenGradModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.embed = nn.Embedding(16, 4)
+        self.model = SimpleNamespace()
+        self.model.layers = nn.ModuleList([nn.Linear(4, 4), nn.Linear(4, 4)])
+        self.lm_head = nn.Linear(4, 16, bias=False)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        use_cache: bool | None = None,
+    ):
+        del attention_mask, use_cache
+        hidden = self.embed(input_ids.long())
+        for layer in self.model.layers:
+            hidden = torch.tanh(layer(hidden))
+        return SimpleNamespace(logits=self.lm_head(hidden))
+
+
 def test_normalize_gradient_token_weights_clips_floors_and_normalizes_mean() -> None:
     sensitivity = torch.tensor([[0.0, 1.0, 100.0, 2.0]])
     config = GradientTokenWeightConfig(
@@ -96,6 +117,36 @@ def test_collect_gradient_token_weights_uses_hidden_times_grad_sensitivity() -> 
     torch.testing.assert_close(layer1_weights.mean(), torch.tensor(1.0), rtol=1e-5, atol=1e-5)
     assert not torch.allclose(layer0_weights, torch.ones_like(layer0_weights))
     assert not torch.allclose(layer0_weights, layer1_weights)
+
+
+def test_collect_gradient_token_weights_supports_full_sid_multi_target_loss() -> None:
+    torch.manual_seed(0)
+    model = ToyTokenGradModel().eval()
+    batch = {
+        "input_ids": torch.tensor([[1, 2, 3]]),
+        "attention_mask": torch.ones(1, 3, dtype=torch.long),
+    }
+
+    weights_by_layer = collect_gradient_token_weight_batches_by_layer(
+        model=model,
+        layers=model.model.layers,
+        layer_indices=[0, 1],
+        model_batches=[batch],
+        teacher_forcing_target_token_ids=[
+            [
+                torch.tensor([4, 5, 6]),
+                torch.tensor([7, 8, 9]),
+            ]
+        ],
+        config=GradientTokenWeightConfig(clip_percentile=100.0, weight_floor=0.0, normalize_mean=True),
+    )
+
+    assert set(weights_by_layer) == {0, 1}
+    for layer_idx in [0, 1]:
+        weights = weights_by_layer[layer_idx][0]
+        assert weights.shape == (1, 3)
+        torch.testing.assert_close(weights.mean(), torch.tensor(1.0), rtol=1e-5, atol=1e-5)
+        assert not torch.allclose(weights, torch.ones_like(weights))
 
 
 def test_collect_gradient_group_weights_replaces_tokens_with_layer_group_means() -> None:

@@ -29,20 +29,30 @@ def collect_gradient_token_weight_batches_by_layer(
     layers: Sequence[nn.Module],
     layer_indices: Sequence[int],
     model_batches: Sequence[Mapping[str, Any]],
-    target_token_ids: Sequence[torch.Tensor | int],
+    target_token_ids: Sequence[torch.Tensor | int] | None = None,
+    teacher_forcing_target_token_ids: Sequence[Sequence[torch.Tensor | int]] | None = None,
     config: GradientTokenWeightConfig = DEFAULT_GRADIENT_TOKEN_WEIGHT_CONFIG,
 ) -> dict[int, list[torch.Tensor]]:
     """Collect per-layer token weights from CE-loss gradient sensitivity.
 
-    The sensitivity for token t is mean_c(|hidden[t, c] * grad[t, c]|).
-    These weights are calibration-only inputs for GPTQ Hessian accumulation.
+    The default loss is the original first-SID-token CE at the last prompt
+    position. When ``teacher_forcing_target_token_ids`` is provided, the loss is
+    the average CE over multiple full-SID target sequences appended to the same
+    prompt with teacher forcing; returned weights are still cropped back to the
+    original prompt tokens so GPTQ Hessian collection stays prompt-prefill only.
     """
     selected = sorted(set(int(idx) for idx in layer_indices))
     if not selected:
         return {}
-    if len(model_batches) != len(target_token_ids):
+    use_teacher_forcing = teacher_forcing_target_token_ids is not None
+    if (target_token_ids is None) == (teacher_forcing_target_token_ids is None):
+        raise ValueError("Pass exactly one of target_token_ids or teacher_forcing_target_token_ids.")
+    expected_targets = teacher_forcing_target_token_ids if use_teacher_forcing else target_token_ids
+    if expected_targets is None:
+        raise RuntimeError("Internal error: gradient targets are not initialized.")
+    if len(model_batches) != len(expected_targets):
         raise ValueError(
-            f"target_token_ids length {len(target_token_ids)} does not match batches length {len(model_batches)}"
+            f"gradient target length {len(expected_targets)} does not match batches length {len(model_batches)}"
         )
     for idx in selected:
         if idx < 0 or idx >= len(layers):
@@ -97,23 +107,50 @@ def collect_gradient_token_weight_batches_by_layer(
 
     model.eval()
     try:
-        for batch, target_token_id in zip(model_batches, target_token_ids):
+        if use_teacher_forcing:
+            assert teacher_forcing_target_token_ids is not None
+            iterator = zip(model_batches, teacher_forcing_target_token_ids)
+        else:
+            assert target_token_ids is not None
+            iterator = zip(model_batches, target_token_ids)
+
+        for batch, target_info in iterator:
             captured.clear()
             model.zero_grad(set_to_none=True)
-            outputs = _forward_model(model, batch)
-            logits = _extract_logits(outputs)
-            target = _target_tensor(target_token_id, logits=logits)
-            positions = _last_prompt_positions(batch, logits=logits)
-            batch_indices = torch.arange(logits.shape[0], device=logits.device)
-            loss = F.cross_entropy(logits[batch_indices, positions, :].float(), target)
+            if use_teacher_forcing:
+                expanded_batch, prompt_mask, prompt_len, loss_specs = _build_teacher_forcing_batch(
+                    batch,
+                    target_info,  # type: ignore[arg-type]
+                )
+                outputs = _forward_model(model, expanded_batch)
+                logits = _extract_logits(outputs)
+                loss = _teacher_forcing_full_sid_loss(logits, loss_specs)
+                attention_mask = batch.get("attention_mask") if isinstance(batch, Mapping) else None
+            else:
+                outputs = _forward_model(model, batch)
+                logits = _extract_logits(outputs)
+                target = _target_tensor(target_info, logits=logits)  # type: ignore[arg-type]
+                positions = _last_prompt_positions(batch, logits=logits)
+                batch_indices = torch.arange(logits.shape[0], device=logits.device)
+                loss = F.cross_entropy(logits[batch_indices, positions, :].float(), target)
+                attention_mask = batch.get("attention_mask") if isinstance(batch, Mapping) else None
+                prompt_mask = None
+                prompt_len = None
             loss.backward()
 
-            attention_mask = batch.get("attention_mask") if isinstance(batch, Mapping) else None
             for layer_idx in selected:
                 hidden = captured.get(layer_idx)
                 if hidden is None or hidden.grad is None:
                     raise RuntimeError(f"No gradient was captured for layer {layer_idx}.")
                 sensitivity = (hidden.detach().float() * hidden.grad.detach().float()).abs().mean(dim=-1)
+                if use_teacher_forcing:
+                    if prompt_mask is None or prompt_len is None:
+                        raise RuntimeError("Internal error: teacher-forcing prompt metadata is missing.")
+                    sensitivity = _collapse_teacher_forcing_prompt_sensitivity(
+                        sensitivity,
+                        prompt_mask=prompt_mask,
+                        prompt_len=prompt_len,
+                    )
                 weights = normalize_gradient_token_weights(
                     sensitivity,
                     attention_mask=attention_mask,
@@ -137,8 +174,9 @@ def collect_gradient_group_token_weight_batches_by_layer(
     layers: Sequence[nn.Module],
     layer_indices: Sequence[int],
     model_batches: Sequence[Mapping[str, Any]],
-    target_token_ids: Sequence[torch.Tensor | int],
+    target_token_ids: Sequence[torch.Tensor | int] | None = None,
     token_group_batches: Sequence[torch.Tensor],
+    teacher_forcing_target_token_ids: Sequence[Sequence[torch.Tensor | int]] | None = None,
     config: GradientTokenWeightConfig = DEFAULT_GRADIENT_TOKEN_WEIGHT_CONFIG,
 ) -> dict[int, list[torch.Tensor]]:
     """Collect layer-wise group-smoothed gradient token weights.
@@ -159,6 +197,7 @@ def collect_gradient_group_token_weight_batches_by_layer(
         layer_indices=layer_indices,
         model_batches=model_batches,
         target_token_ids=target_token_ids,
+        teacher_forcing_target_token_ids=teacher_forcing_target_token_ids,
         config=config,
     )
     return group_token_weight_batches_by_layer(
@@ -276,6 +315,83 @@ def _normalize_valid_mean(weights: torch.Tensor, mask: torch.Tensor, *, eps: flo
     mean = valid.float().mean().clamp_min(float(eps))
     normalized = weights / mean
     return torch.where(mask, normalized, torch.zeros_like(normalized))
+
+
+def _build_teacher_forcing_batch(
+    batch: Mapping[str, Any],
+    target_sequences: Sequence[torch.Tensor | int],
+) -> tuple[dict[str, torch.Tensor], torch.Tensor, int, list[tuple[int, torch.Tensor, torch.Tensor]]]:
+    input_ids = batch.get("input_ids") if isinstance(batch, Mapping) else None
+    if not torch.is_tensor(input_ids) or input_ids.ndim != 2:
+        raise ValueError("Teacher-forcing gradient targets require input_ids with shape [batch, seq].")
+    if input_ids.shape[0] != 1:
+        raise ValueError("Teacher-forcing gradient target collection currently expects one prompt per batch.")
+
+    prompt_mask = _valid_token_mask(batch, shape=input_ids.shape).to(device=input_ids.device)
+    prompt_ids = input_ids[0][prompt_mask[0]].detach()
+    prompt_len = int(prompt_ids.numel())
+    if prompt_len == 0:
+        raise ValueError("Cannot build teacher-forcing batch from an empty prompt.")
+
+    prepared_targets: list[torch.Tensor] = []
+    for target in target_sequences:
+        target_ids = torch.as_tensor(target, device=input_ids.device, dtype=input_ids.dtype).reshape(-1)
+        if target_ids.numel() == 0:
+            continue
+        prepared_targets.append(target_ids.detach())
+    if not prepared_targets:
+        raise ValueError("At least one non-empty teacher-forcing target sequence is required.")
+
+    max_len = max(prompt_len + int(target.numel()) for target in prepared_targets)
+    expanded_input_ids = torch.zeros(
+        (len(prepared_targets), max_len),
+        dtype=input_ids.dtype,
+        device=input_ids.device,
+    )
+    expanded_attention_mask = torch.zeros(
+        (len(prepared_targets), max_len),
+        dtype=torch.long,
+        device=input_ids.device,
+    )
+    loss_specs: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+    for row_idx, target_ids in enumerate(prepared_targets):
+        seq = torch.cat([prompt_ids, target_ids], dim=0)
+        expanded_input_ids[row_idx, : seq.numel()] = seq
+        expanded_attention_mask[row_idx, : seq.numel()] = 1
+        positions = prompt_len - 1 + torch.arange(target_ids.numel(), device=input_ids.device)
+        loss_specs.append((row_idx, positions, target_ids.to(dtype=torch.long)))
+
+    return {
+        "input_ids": expanded_input_ids,
+        "attention_mask": expanded_attention_mask,
+    }, prompt_mask, prompt_len, loss_specs
+
+
+def _teacher_forcing_full_sid_loss(
+    logits: torch.Tensor,
+    loss_specs: Sequence[tuple[int, torch.Tensor, torch.Tensor]],
+) -> torch.Tensor:
+    losses = []
+    for row_idx, positions, target_ids in loss_specs:
+        row_logits = logits[row_idx, positions.to(device=logits.device), :].float()
+        losses.append(F.cross_entropy(row_logits, target_ids.to(device=logits.device), reduction="mean"))
+    if not losses:
+        raise ValueError("No teacher-forcing loss terms were built.")
+    return torch.stack(losses).mean()
+
+
+def _collapse_teacher_forcing_prompt_sensitivity(
+    sensitivity: torch.Tensor,
+    *,
+    prompt_mask: torch.Tensor,
+    prompt_len: int,
+) -> torch.Tensor:
+    if sensitivity.ndim != 2:
+        raise ValueError(f"Expected teacher-forcing sensitivity shape [targets, seq], got {tuple(sensitivity.shape)}")
+    prompt_sensitivity = sensitivity[:, :prompt_len].mean(dim=0)
+    collapsed = torch.zeros(prompt_mask.shape, device=sensitivity.device, dtype=sensitivity.dtype)
+    collapsed[prompt_mask.to(device=sensitivity.device)] = prompt_sensitivity.reshape(-1)
+    return collapsed
 
 
 def _forward_model(model: nn.Module, batch: Mapping[str, Any]) -> Any:

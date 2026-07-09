@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from real_quant.full_precision import generator as generator_module
 from real_quant.full_precision.generator import append_prompt_token, build_hf_generation_kwargs
 from real_quant.full_precision.latency import LatencyRecord, aggregate_latency
 from real_quant.full_precision.results import build_generation_payload
@@ -133,6 +134,58 @@ def test_batched_items_preserves_order_and_respects_batch_size() -> None:
     batches = list(batched_items([("a", 1), ("b", 2), ("c", 3)], batch_size=2))
 
     assert batches == [[("a", 1), ("b", 2)], [("c", 3)]]
+
+
+def test_iter_batch_starts_with_progress_wraps_tqdm(monkeypatch) -> None:
+    calls = []
+
+    def fake_tqdm(iterable, **kwargs):
+        calls.append(kwargs)
+        return list(iterable)
+
+    monkeypatch.delenv("OOR_DISABLE_TQDM", raising=False)
+    monkeypatch.setattr(generator_module, "tqdm", fake_tqdm)
+
+    starts = list(
+        generator_module.iter_batch_starts_with_progress(
+            total_items=5,
+            batch_size=2,
+            desc="HF generate",
+        )
+    )
+
+    assert starts == [0, 2, 4]
+    assert calls == [
+        {
+            "total": 3,
+            "desc": "HF generate",
+            "unit": "batch",
+            "disable": False,
+            "dynamic_ncols": True,
+        }
+    ]
+
+
+def test_iter_batch_starts_with_progress_can_be_disabled(monkeypatch) -> None:
+    calls = []
+
+    def fake_tqdm(iterable, **kwargs):
+        calls.append(kwargs)
+        return list(iterable)
+
+    monkeypatch.setenv("OOR_DISABLE_TQDM", "1")
+    monkeypatch.setattr(generator_module, "tqdm", fake_tqdm)
+
+    starts = list(
+        generator_module.iter_batch_starts_with_progress(
+            total_items=3,
+            batch_size=1,
+            desc="HF generate",
+        )
+    )
+
+    assert starts == [0, 1, 2]
+    assert calls[0]["disable"] is True
 
 
 def test_parse_batch_size_arg_accepts_auto_and_positive_int() -> None:

@@ -5,7 +5,11 @@ import torch.nn as nn
 
 from fake_quant_learnable.gptq import collect_gptq_hessians
 from fake_quant_learnable.token_weights import (
+    SLOT_TOKEN_GROUP_IDS,
     PromptTokenWeightConfig,
+    SlotTokenWeightConfig,
+    build_prompt_slot_token_group_batches,
+    build_prompt_slot_token_weight_batches,
     build_prompt_token_weight_batches,
 )
 from fake_quant_learnable.run_m1_onerec_ad import parse_args
@@ -67,6 +71,59 @@ def test_prompt_token_weights_distinguish_text_history_sid_interest_sid_and_boun
     assert weights[0, prompt.index("<s_a_4>") + 1].item() == 5.0
     assert weights[0, prompt.index("<|sid_begin|>") + 1].item() == 2.0
     assert weights[0, prompt.rindex("<|sid_begin|>") + 1].item() == 2.0
+
+
+def test_prompt_slot_token_weights_distinguish_sid_slots_and_boundaries() -> None:
+    prompt = (
+        "任务文本 "
+        "<|sid_begin|><s_a_1><s_b_2><s_c_3><|sid_end|> "
+        "<|sid_begin|>"
+    )
+    config = SlotTokenWeightConfig(
+        text_weight=10.0,
+        sid_a_weight=5.0,
+        sid_b_weight=2.0,
+        sid_c_weight=2.0,
+        boundary_weight=2.0,
+        normalize_mean=False,
+    )
+
+    weights = build_prompt_slot_token_weight_batches(
+        tokenizer=CharOffsetTokenizer(),
+        prompts=[prompt],
+        device=torch.device("cpu"),
+        config=config,
+    )[0]
+
+    assert weights.shape == (1, len(prompt))
+    assert weights[0, prompt.index("任")].item() == 10.0
+    assert weights[0, prompt.index("<s_a_1>") + 1].item() == 5.0
+    assert weights[0, prompt.index("<s_b_2>") + 1].item() == 2.0
+    assert weights[0, prompt.index("<s_c_3>") + 1].item() == 2.0
+    assert weights[0, prompt.index("<|sid_begin|>") + 1].item() == 2.0
+    assert weights[0, prompt.rindex("<|sid_begin|>") + 1].item() == 2.0
+
+
+def test_prompt_slot_token_group_batches_distinguish_sid_slots_and_boundaries() -> None:
+    prompt = (
+        "任务文本 "
+        "<|sid_begin|><s_a_1><s_b_2><s_c_3><|sid_end|> "
+        "<|sid_begin|>"
+    )
+
+    groups = build_prompt_slot_token_group_batches(
+        tokenizer=CharOffsetTokenizer(),
+        prompts=[prompt],
+        device=torch.device("cpu"),
+    )[0]
+
+    assert groups.shape == (1, len(prompt))
+    assert groups[0, prompt.index("任")].item() == SLOT_TOKEN_GROUP_IDS["text"]
+    assert groups[0, prompt.index("<s_a_1>") + 1].item() == SLOT_TOKEN_GROUP_IDS["sid_a"]
+    assert groups[0, prompt.index("<s_b_2>") + 1].item() == SLOT_TOKEN_GROUP_IDS["sid_b"]
+    assert groups[0, prompt.index("<s_c_3>") + 1].item() == SLOT_TOKEN_GROUP_IDS["sid_c"]
+    assert groups[0, prompt.index("<|sid_begin|>") + 1].item() == SLOT_TOKEN_GROUP_IDS["boundary"]
+    assert groups[0, prompt.rindex("<|sid_begin|>") + 1].item() == SLOT_TOKEN_GROUP_IDS["boundary"]
 
 
 def test_parse_args_accepts_weighted_gptq_mode(monkeypatch) -> None:

@@ -19,6 +19,8 @@ SECTION_BREAK_RE = re.compile(r"[A-Za-z0-9_\u4e00-\u9fff]")
 
 PROMPT_TOKEN_GROUPS = ("text", "history_sid", "interest_sid", "sid_boundary")
 PROMPT_TOKEN_GROUP_IDS = {group: idx for idx, group in enumerate(PROMPT_TOKEN_GROUPS)}
+SLOT_TOKEN_GROUPS = ("text", "sid_a", "sid_b", "sid_c", "boundary")
+SLOT_TOKEN_GROUP_IDS = {group: idx for idx, group in enumerate(SLOT_TOKEN_GROUPS)}
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,22 @@ class PromptTokenWeightConfig:
 DEFAULT_PROMPT_TOKEN_WEIGHT_CONFIG = PromptTokenWeightConfig()
 
 
+@dataclass(frozen=True)
+class SlotTokenWeightConfig:
+    text_weight: float = 10.0
+    sid_a_weight: float = 5.0
+    sid_b_weight: float = 2.0
+    sid_c_weight: float = 2.0
+    boundary_weight: float = 2.0
+    normalize_mean: bool = True
+
+    def to_jsonable(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+DEFAULT_SLOT_TOKEN_WEIGHT_CONFIG = SlotTokenWeightConfig()
+
+
 def build_prompt_token_weight_batches(
     *,
     tokenizer: Any,
@@ -50,6 +68,20 @@ def build_prompt_token_weight_batches(
     """
     return [
         build_prompt_token_weights(tokenizer=tokenizer, prompt=prompt, device=device, config=config)
+        for prompt in prompts
+    ]
+
+
+def build_prompt_slot_token_weight_batches(
+    *,
+    tokenizer: Any,
+    prompts: Sequence[str],
+    device: torch.device | str,
+    config: SlotTokenWeightConfig = DEFAULT_SLOT_TOKEN_WEIGHT_CONFIG,
+) -> list[torch.Tensor]:
+    """Build calibration weights from SID slot spans: text/sid_a/sid_b/sid_c/boundary."""
+    return [
+        build_prompt_slot_token_weights(tokenizer=tokenizer, prompt=prompt, device=device, config=config)
         for prompt in prompts
     ]
 
@@ -88,6 +120,40 @@ def build_prompt_token_group_batches(
     return [build_prompt_token_groups(tokenizer=tokenizer, prompt=prompt, device=device) for prompt in prompts]
 
 
+def build_prompt_slot_token_group_batches(
+    *,
+    tokenizer: Any,
+    prompts: Sequence[str],
+    device: torch.device | str,
+) -> list[torch.Tensor]:
+    """Build per-token SID slot group ids: text/sid_a/sid_b/sid_c/boundary."""
+    return [build_prompt_slot_token_groups(tokenizer=tokenizer, prompt=prompt, device=device) for prompt in prompts]
+
+
+def build_prompt_slot_token_weights(
+    *,
+    tokenizer: Any,
+    prompt: str,
+    device: torch.device | str,
+    config: SlotTokenWeightConfig = DEFAULT_SLOT_TOKEN_WEIGHT_CONFIG,
+) -> torch.Tensor:
+    encoded, offsets = _tokenize_with_offsets(tokenizer, prompt)
+    input_ids = _as_tensor(encoded["input_ids"])
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise ValueError(f"Expected single-prompt input_ids shape [1, seq], got {tuple(input_ids.shape)}")
+
+    if offsets is None:
+        weights = _fallback_slot_weights_from_decoded_tokens(tokenizer, input_ids, config=config)
+    else:
+        weights = _slot_weights_from_offsets(prompt, offsets, config=config)
+
+    if weights.shape != input_ids.shape:
+        raise ValueError(f"Token weight shape {tuple(weights.shape)} does not match input_ids {tuple(input_ids.shape)}")
+    if config.normalize_mean:
+        weights = _normalize_weight_mean(weights, encoded.get("attention_mask"))
+    return weights.to(device=device, dtype=torch.float32)
+
+
 def build_prompt_token_groups(
     *,
     tokenizer: Any,
@@ -103,6 +169,27 @@ def build_prompt_token_groups(
         groups = _fallback_groups_from_decoded_tokens(tokenizer, input_ids)
     else:
         groups = _groups_from_offsets(prompt, offsets)
+
+    if groups.shape != input_ids.shape:
+        raise ValueError(f"Token group shape {tuple(groups.shape)} does not match input_ids {tuple(input_ids.shape)}")
+    return groups.to(device=device, dtype=torch.long)
+
+
+def build_prompt_slot_token_groups(
+    *,
+    tokenizer: Any,
+    prompt: str,
+    device: torch.device | str,
+) -> torch.Tensor:
+    encoded, offsets = _tokenize_with_offsets(tokenizer, prompt)
+    input_ids = _as_tensor(encoded["input_ids"])
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise ValueError(f"Expected single-prompt input_ids shape [1, seq], got {tuple(input_ids.shape)}")
+
+    if offsets is None:
+        groups = _fallback_slot_groups_from_decoded_tokens(tokenizer, input_ids)
+    else:
+        groups = _slot_groups_from_offsets(prompt, offsets)
 
     if groups.shape != input_ids.shape:
         raise ValueError(f"Token group shape {tuple(groups.shape)} does not match input_ids {tuple(input_ids.shape)}")
@@ -150,6 +237,56 @@ def _groups_from_offsets(prompt: str, offsets: torch.Tensor) -> torch.Tensor:
         role = _role_for_span(start, end, role_spans)
         groups[0, idx] = _group_id_for_role(role)
     return groups
+
+
+def _slot_weights_from_offsets(
+    prompt: str,
+    offsets: torch.Tensor,
+    *,
+    config: SlotTokenWeightConfig,
+) -> torch.Tensor:
+    if offsets.ndim != 3 or offsets.shape[0] != 1 or offsets.shape[-1] != 2:
+        raise ValueError(f"Expected offset_mapping shape [1, seq, 2], got {tuple(offsets.shape)}")
+    slot_spans = _prompt_slot_spans(prompt)
+    weights = torch.full((1, offsets.shape[1]), float(config.text_weight), dtype=torch.float32)
+    for idx, (start_t, end_t) in enumerate(offsets[0]):
+        start = int(start_t.item())
+        end = int(end_t.item())
+        role = _role_for_span(start, end, slot_spans)
+        weights[0, idx] = _weight_for_slot_role(role, config)
+    return weights
+
+
+def _slot_groups_from_offsets(prompt: str, offsets: torch.Tensor) -> torch.Tensor:
+    if offsets.ndim != 3 or offsets.shape[0] != 1 or offsets.shape[-1] != 2:
+        raise ValueError(f"Expected offset_mapping shape [1, seq, 2], got {tuple(offsets.shape)}")
+    slot_spans = _prompt_slot_spans(prompt)
+    groups = torch.full((1, offsets.shape[1]), SLOT_TOKEN_GROUP_IDS["text"], dtype=torch.long)
+    for idx, (start_t, end_t) in enumerate(offsets[0]):
+        start = int(start_t.item())
+        end = int(end_t.item())
+        role = _role_for_span(start, end, slot_spans)
+        groups[0, idx] = _group_id_for_slot_role(role)
+    return groups
+
+
+def _prompt_slot_spans(prompt: str) -> list[tuple[int, int, str]]:
+    spans: list[tuple[int, int, str]] = []
+    for token in SID_TOKEN_RE.finditer(prompt):
+        spans.append((token.start(), token.end(), _slot_role_for_token(token.group(0))))
+    return spans
+
+
+def _slot_role_for_token(token: str) -> str:
+    if SID_BOUNDARY_RE.fullmatch(token):
+        return "boundary"
+    if token.startswith("<s_a_"):
+        return "sid_a"
+    if token.startswith("<s_b_"):
+        return "sid_b"
+    if token.startswith("<s_c_"):
+        return "sid_c"
+    return "text"
 
 
 def _prompt_role_spans(prompt: str) -> list[tuple[int, int, str]]:
@@ -217,6 +354,30 @@ def _group_id_for_role(role: str) -> int:
     return PROMPT_TOKEN_GROUP_IDS["text"]
 
 
+def _weight_for_slot_role(role: str, config: SlotTokenWeightConfig) -> float:
+    if role == "sid_a":
+        return float(config.sid_a_weight)
+    if role == "sid_b":
+        return float(config.sid_b_weight)
+    if role == "sid_c":
+        return float(config.sid_c_weight)
+    if role == "boundary":
+        return float(config.boundary_weight)
+    return float(config.text_weight)
+
+
+def _group_id_for_slot_role(role: str) -> int:
+    if role == "sid_a":
+        return SLOT_TOKEN_GROUP_IDS["sid_a"]
+    if role == "sid_b":
+        return SLOT_TOKEN_GROUP_IDS["sid_b"]
+    if role == "sid_c":
+        return SLOT_TOKEN_GROUP_IDS["sid_c"]
+    if role == "boundary":
+        return SLOT_TOKEN_GROUP_IDS["boundary"]
+    return SLOT_TOKEN_GROUP_IDS["text"]
+
+
 def _fallback_weights_from_decoded_tokens(
     tokenizer: Any,
     input_ids: torch.Tensor,
@@ -245,6 +406,45 @@ def _fallback_groups_from_decoded_tokens(tokenizer: Any, input_ids: torch.Tensor
             groups[0, idx] = PROMPT_TOKEN_GROUP_IDS["sid_boundary"]
         elif SID_CODE_RE.search(token_text):
             groups[0, idx] = PROMPT_TOKEN_GROUP_IDS["history_sid"]
+    return groups
+
+
+def _fallback_slot_weights_from_decoded_tokens(
+    tokenizer: Any,
+    input_ids: torch.Tensor,
+    *,
+    config: SlotTokenWeightConfig,
+) -> torch.Tensor:
+    weights = torch.full_like(input_ids, float(config.text_weight), dtype=torch.float32)
+    if not hasattr(tokenizer, "decode"):
+        return weights
+    for idx, token_id in enumerate(input_ids[0].tolist()):
+        token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+        if SID_BOUNDARY_RE.search(token_text):
+            weights[0, idx] = float(config.boundary_weight)
+        elif "<s_a_" in token_text:
+            weights[0, idx] = float(config.sid_a_weight)
+        elif "<s_b_" in token_text:
+            weights[0, idx] = float(config.sid_b_weight)
+        elif "<s_c_" in token_text:
+            weights[0, idx] = float(config.sid_c_weight)
+    return weights
+
+
+def _fallback_slot_groups_from_decoded_tokens(tokenizer: Any, input_ids: torch.Tensor) -> torch.Tensor:
+    groups = torch.full_like(input_ids, SLOT_TOKEN_GROUP_IDS["text"], dtype=torch.long)
+    if not hasattr(tokenizer, "decode"):
+        return groups
+    for idx, token_id in enumerate(input_ids[0].tolist()):
+        token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+        if SID_BOUNDARY_RE.search(token_text):
+            groups[0, idx] = SLOT_TOKEN_GROUP_IDS["boundary"]
+        elif "<s_a_" in token_text:
+            groups[0, idx] = SLOT_TOKEN_GROUP_IDS["sid_a"]
+        elif "<s_b_" in token_text:
+            groups[0, idx] = SLOT_TOKEN_GROUP_IDS["sid_b"]
+        elif "<s_c_" in token_text:
+            groups[0, idx] = SLOT_TOKEN_GROUP_IDS["sid_c"]
     return groups
 
 

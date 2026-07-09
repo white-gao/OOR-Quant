@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import torch
+from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .latency import LatencyRecord, cuda_synchronize_if_needed
@@ -64,6 +65,29 @@ def dtype_from_name(name: str) -> torch.dtype:
 
 def _extract_sequences(output: Any) -> torch.Tensor:
     return output.sequences if hasattr(output, "sequences") else output
+
+
+def _progress_disabled_from_env() -> bool:
+    return os.environ.get("OOR_DISABLE_TQDM", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def iter_batch_starts_with_progress(
+    *,
+    total_items: int,
+    batch_size: int,
+    desc: str,
+):
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}.")
+    total_batches = (int(total_items) + int(batch_size) - 1) // int(batch_size)
+    return tqdm(
+        range(0, int(total_items), int(batch_size)),
+        total=total_batches,
+        desc=desc,
+        unit="batch",
+        disable=_progress_disabled_from_env(),
+        dynamic_ncols=True,
+    )
 
 
 class HFFullPrecisionGenerator:
@@ -267,7 +291,11 @@ class HFFullPrecisionGenerator:
             (sample_id, append_prompt_token(prompt, prompt_token))
             for sample_id, prompt in prompts.items()
         ]
-        for start in range(0, len(formatted_items), batch_size):
+        for start in iter_batch_starts_with_progress(
+            total_items=len(formatted_items),
+            batch_size=batch_size,
+            desc=f"{self} generate",
+        ):
             batch = formatted_items[start : start + batch_size]
             if batch_size == 1:
                 sample_id, formatted_prompt = batch[0]
