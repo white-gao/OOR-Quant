@@ -11,6 +11,9 @@ from fake_quant_learnable.gradient_weights import (
     collect_gradient_token_weight_batches_by_layer,
     normalize_gradient_token_weights,
 )
+from fake_quant_learnable.linear_gradient_weights import (
+    collect_linear_gradient_group_token_weight_batches_by_layer,
+)
 from fake_quant_learnable.run_m1_onerec_ad import parse_args
 from fake_quant_learnable.token_weights import (
     PROMPT_TOKEN_GROUP_IDS,
@@ -149,6 +152,32 @@ def test_collect_gradient_token_weights_supports_full_sid_multi_target_loss() ->
         assert not torch.allclose(weights, torch.ones_like(weights))
 
 
+def test_collect_linear_gradient_group_weights_supports_full_sid_multi_target() -> None:
+    torch.manual_seed(0)
+    model = ToyTokenGradModel().eval()
+    batch = {
+        "input_ids": torch.tensor([[1, 2, 3]]),
+        "attention_mask": torch.ones(1, 3, dtype=torch.long),
+    }
+
+    weights = collect_linear_gradient_group_token_weight_batches_by_layer(
+        model=model,
+        layers=model.model.layers,
+        layer_indices=[0, 1],
+        model_batches=[batch],
+        teacher_forcing_target_token_ids=[[torch.tensor([4, 5]), torch.tensor([6, 7])]],
+        token_group_batches=[torch.tensor([[0, 1, 0]])],
+        linear_regex=r"$",
+        config=GradientTokenWeightConfig(clip_percentile=100.0, weight_floor=0.0, normalize_mean=True),
+    )
+
+    for layer_idx in [0, 1]:
+        grouped = weights[layer_idx][""][0]
+        assert grouped.shape == (1, 3)
+        torch.testing.assert_close(grouped[:, 0], grouped[:, 2])
+        assert torch.isfinite(grouped).all()
+
+
 def test_collect_gradient_group_weights_replaces_tokens_with_layer_group_means() -> None:
     torch.manual_seed(0)
     model = ToyGradModel().eval()
@@ -213,6 +242,38 @@ def test_collect_gradient_group_weights_replaces_tokens_with_layer_group_means()
             for group_id, mean in group_means.items():
                 expected = torch.where(groups == group_id, torch.full_like(expected, mean), expected)
             torch.testing.assert_close(grouped_weights, expected)
+
+
+def test_collect_linear_gradient_group_weights_returns_linear_specific_group_smoothing() -> None:
+    torch.manual_seed(0)
+    model = ToyGradModel().eval()
+    batches = [
+        {
+            "input_ids": torch.tensor([[[1.0, 0.0], [0.0, 1.0], [2.0, -1.0]]]),
+            "attention_mask": torch.ones(1, 3, dtype=torch.long),
+        }
+    ]
+    groups = [torch.tensor([[0, 1, 0]])]
+
+    weights = collect_linear_gradient_group_token_weight_batches_by_layer(
+        model=model,
+        layers=model.model.layers,
+        layer_indices=[0, 1],
+        model_batches=batches,
+        target_token_ids=[torch.tensor(1)],
+        token_group_batches=groups,
+        linear_regex=r"$",
+        config=GradientTokenWeightConfig(clip_percentile=100.0, weight_floor=0.0, normalize_mean=True),
+    )
+
+    assert set(weights) == {0, 1}
+    assert set(weights[0]) == {""}
+    assert set(weights[1]) == {""}
+    for layer_idx in [0, 1]:
+        grouped = weights[layer_idx][""][0]
+        assert grouped.shape == (1, 3)
+        torch.testing.assert_close(grouped[:, 0], grouped[:, 2])
+        assert float(grouped[:, 1].item()) > 0.0
 
 
 def test_prompt_token_group_batches_distinguish_roles() -> None:

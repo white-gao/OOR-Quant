@@ -8,7 +8,7 @@ from .apply import (
     iter_gptq_w8a8_modules,
     iter_smoothquant_w8a8_modules,
 )
-from .gptq import collect_gptq_hessians, gptq_fp8_quantize_weight, gptq_quantized_module_from_hessians
+from .gptq import collect_gptq_hessians, gptaq_fp8_quantize_weight, gptq_fp8_quantize_weight, gptq_quantized_module_from_hessians
 from .gradient_weights import (
     DEFAULT_GRADIENT_TOKEN_WEIGHT_CONFIG,
     GradientTokenWeightConfig,
@@ -72,6 +72,7 @@ __all__ = [
     "collect_smoothquant_scales",
     "fold_smoothquant_scales_inplace",
     "fp8_e4m3_qdq_forward",
+    "gptaq_fp8_quantize_weight",
     "gptq_fp8_quantize_weight",
     "gptq_quantized_module_from_hessians",
     "install_shared_input_activation_quantization",

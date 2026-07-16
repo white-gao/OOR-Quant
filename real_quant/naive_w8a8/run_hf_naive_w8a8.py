@@ -29,6 +29,7 @@ from real_quant.full_precision.run_hf_baseline import (
 from .apply import NaiveW8A8Summary, apply_naive_w8a8, iter_real_fp8_linears
 from .gptq_runtime import (
     WEIGHT_QUANT_MODES,
+    apply_gptaq_real_w8a8_layers,
     apply_gptq_real_w8a8_layers,
     build_first_sid_target_token_ids,
     build_model_batches,
@@ -49,6 +50,9 @@ from fake_quant_learnable.gradient_weights import (
     DEFAULT_GRADIENT_TOKEN_WEIGHT_CONFIG,
     GradientTokenWeightConfig,
     collect_gradient_group_token_weight_batches_by_layer,
+)
+from fake_quant_learnable.linear_gradient_weights import (
+    collect_linear_gradient_group_token_weight_batches_by_layer,
 )
 from fake_quant_learnable.token_weights import (
     DEFAULT_PROMPT_TOKEN_WEIGHT_CONFIG,
@@ -109,15 +113,26 @@ class HFNaiveW8A8Generator(HFFullPrecisionGenerator):
         gptq_layers: str = "all",
         gptq_damp_percent: float = DEFAULT_GPTQ_DAMP_PERCENT,
         gptq_block_size: int = DEFAULT_GPTQ_BLOCK_SIZE,
+        gptaq_alpha: float = 1.0,
+        gptaq_activation_aware: bool = True,
         token_weight_config: PromptTokenWeightConfig = DEFAULT_PROMPT_TOKEN_WEIGHT_CONFIG,
         slot_token_weight_config: SlotTokenWeightConfig = DEFAULT_SLOT_TOKEN_WEIGHT_CONFIG,
         gradient_token_weight_config: GradientTokenWeightConfig = DEFAULT_GRADIENT_TOKEN_WEIGHT_CONFIG,
+        slot_grad_weight_granularity: str = "layer",
         gradient_loss_mode: str = "first_sid",
         gradient_max_targets: int = 1,
     ) -> "HFNaiveW8A8Generator":
         require_real_fp8_device(device)
         if weight_quant_mode not in WEIGHT_QUANT_MODES:
             raise ValueError(f"Unsupported weight_quant_mode {weight_quant_mode!r}; expected one of {WEIGHT_QUANT_MODES}.")
+        if slot_grad_weight_granularity not in {"layer", "linear"}:
+            raise ValueError(
+                f"Unsupported slot_grad_weight_granularity {slot_grad_weight_granularity!r}; expected 'layer' or 'linear'."
+            )
+        if slot_grad_weight_granularity == "linear" and weight_quant_mode != "slot_grad_weighted_gptaq":
+            raise ValueError(
+                "--slot_grad_weight_granularity linear requires --weight_quant_mode slot_grad_weighted_gptaq."
+            )
 
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=trust_remote_code)
         if tokenizer.pad_token_id is None:
@@ -175,6 +190,7 @@ class HFNaiveW8A8Generator(HFFullPrecisionGenerator):
             )
             token_weight_batches = None
             token_weight_batches_by_layer = None
+            token_weight_batches_by_layer_and_linear = None
             if weight_quant_mode == "weighted_gptq":
                 token_weight_batches = build_prompt_token_weight_batches(
                     tokenizer=tokenizer,
@@ -189,7 +205,7 @@ class HFNaiveW8A8Generator(HFFullPrecisionGenerator):
                     device=input_device,
                     config=slot_token_weight_config,
                 )
-            elif weight_quant_mode in {"grad_weighted_gptq", "slot_grad_weighted_gptq"}:
+            elif weight_quant_mode in {"grad_weighted_gptq", "slot_grad_weighted_gptq", "slot_grad_weighted_gptaq"}:
                 if gradient_loss_mode not in {"first_sid", "full_sid_multi_target"}:
                     raise ValueError(f"Unsupported gradient_loss_mode {gradient_loss_mode!r}.")
                 if gradient_loss_mode == "full_sid_multi_target" and gradient_max_targets <= 0:
@@ -204,7 +220,7 @@ class HFNaiveW8A8Generator(HFFullPrecisionGenerator):
                     )
                 else:
                     target_token_ids = build_first_sid_target_token_ids(tokenizer, list(calib_data.values()))
-                if weight_quant_mode == "slot_grad_weighted_gptq":
+                if weight_quant_mode in {"slot_grad_weighted_gptq", "slot_grad_weighted_gptaq"}:
                     token_group_batches = build_prompt_slot_token_group_batches(
                         tokenizer=tokenizer,
                         prompts=calib_prompts,
@@ -216,36 +232,69 @@ class HFNaiveW8A8Generator(HFFullPrecisionGenerator):
                         prompts=calib_prompts,
                         device=input_device,
                     )
-                token_weight_batches_by_layer = collect_gradient_group_token_weight_batches_by_layer(
-                    model=model,
-                    layers=layers,
-                    layer_indices=layer_indices,
-                    model_batches=calib_batches,
-                    target_token_ids=target_token_ids,
-                    teacher_forcing_target_token_ids=teacher_forcing_target_token_ids,
-                    token_group_batches=token_group_batches,
-                    config=gradient_token_weight_config,
-                )
+                if weight_quant_mode == "slot_grad_weighted_gptaq" and slot_grad_weight_granularity == "linear":
+                    token_weight_batches_by_layer_and_linear = collect_linear_gradient_group_token_weight_batches_by_layer(
+                        model=model,
+                        layers=layers,
+                        layer_indices=layer_indices,
+                        model_batches=calib_batches,
+                        target_token_ids=target_token_ids,
+                        teacher_forcing_target_token_ids=teacher_forcing_target_token_ids,
+                        token_group_batches=token_group_batches,
+                        config=gradient_token_weight_config,
+                    )
+                else:
+                    token_weight_batches_by_layer = collect_gradient_group_token_weight_batches_by_layer(
+                        model=model,
+                        layers=layers,
+                        layer_indices=layer_indices,
+                        model_batches=calib_batches,
+                        target_token_ids=target_token_ids,
+                        teacher_forcing_target_token_ids=teacher_forcing_target_token_ids,
+                        token_group_batches=token_group_batches,
+                        config=gradient_token_weight_config,
+                    )
             print(
                 "[hf_naive_w8a8] collecting GPTQ Hessians "
                 f"mode={weight_quant_mode}, split={calib_split}, samples={len(calib_prompts)}, layers={layer_indices}"
             )
-            quant_summary = apply_gptq_real_w8a8_layers(
-                model=model,
-                model_batches=calib_batches,
-                layer_indices=layer_indices,
-                output_dtype=output_dtype,
-                target_regex=target_regex,
-                skip_regex=skip_regex,
-                use_fast_accum=use_fast_accum,
-                activation_quant_mode=activation_quant_mode,
-                decode_a16_when_single_token=decode_a16_when_single_token,
-                activation_tail_tokens=activation_tail_tokens,
-                damp_percent=gptq_damp_percent,
-                block_size=gptq_block_size,
-                token_weight_batches=token_weight_batches,
-                token_weight_batches_by_layer=token_weight_batches_by_layer,
-            )
+            if weight_quant_mode in {"gptaq", "slot_grad_weighted_gptaq"}:
+                quant_summary = apply_gptaq_real_w8a8_layers(
+                    model=model,
+                    model_batches=calib_batches,
+                    layer_indices=layer_indices,
+                    output_dtype=output_dtype,
+                    target_regex=target_regex,
+                    skip_regex=skip_regex,
+                    use_fast_accum=use_fast_accum,
+                    activation_quant_mode=activation_quant_mode,
+                    decode_a16_when_single_token=decode_a16_when_single_token,
+                    activation_tail_tokens=activation_tail_tokens,
+                    damp_percent=gptq_damp_percent,
+                    block_size=gptq_block_size,
+                    alpha=gptaq_alpha,
+                    activation_aware=gptaq_activation_aware,
+                    token_weight_batches=token_weight_batches,
+                    token_weight_batches_by_layer=token_weight_batches_by_layer,
+                    token_weight_batches_by_layer_and_linear=token_weight_batches_by_layer_and_linear,
+                )
+            else:
+                quant_summary = apply_gptq_real_w8a8_layers(
+                    model=model,
+                    model_batches=calib_batches,
+                    layer_indices=layer_indices,
+                    output_dtype=output_dtype,
+                    target_regex=target_regex,
+                    skip_regex=skip_regex,
+                    use_fast_accum=use_fast_accum,
+                    activation_quant_mode=activation_quant_mode,
+                    decode_a16_when_single_token=decode_a16_when_single_token,
+                    activation_tail_tokens=activation_tail_tokens,
+                    damp_percent=gptq_damp_percent,
+                    block_size=gptq_block_size,
+                    token_weight_batches=token_weight_batches,
+                    token_weight_batches_by_layer=token_weight_batches_by_layer,
+                )
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -347,6 +396,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gptq_layers", default="all", help='Layer spec for GPTQ: "all", "last:K", or "0,2-4".')
     parser.add_argument("--gptq_damp_percent", type=float, default=DEFAULT_GPTQ_DAMP_PERCENT)
     parser.add_argument("--gptq_block_size", type=int, default=DEFAULT_GPTQ_BLOCK_SIZE)
+    parser.add_argument("--gptaq_alpha", type=float, default=1.0)
+    parser.add_argument(
+        "--gptaq_activation_aware",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use runtime FP8-QDQ activations as the GPTAQ X_hat target.",
+    )
+    parser.add_argument(
+        "--slot_grad_weight_granularity",
+        choices=("layer", "linear"),
+        default="layer",
+        help="Use layer-shared or Linear-wise slot-group gradient weights for slot_grad_weighted_gptaq.",
+    )
     parser.add_argument("--token_weight_history_sid", type=float, default=DEFAULT_PROMPT_TOKEN_WEIGHT_CONFIG.history_sid_weight)
     parser.add_argument("--token_weight_interest_sid", type=float, default=DEFAULT_PROMPT_TOKEN_WEIGHT_CONFIG.interest_sid_weight)
     parser.add_argument("--token_weight_text", type=float, default=DEFAULT_PROMPT_TOKEN_WEIGHT_CONFIG.text_weight)
@@ -596,6 +658,9 @@ def main() -> None:
         gptq_layers=args.gptq_layers,
         gptq_damp_percent=args.gptq_damp_percent,
         gptq_block_size=args.gptq_block_size,
+        gptaq_alpha=args.gptaq_alpha,
+        gptaq_activation_aware=args.gptaq_activation_aware,
+        slot_grad_weight_granularity=args.slot_grad_weight_granularity,
         token_weight_config=token_weight_config,
         slot_token_weight_config=slot_token_weight_config,
         gradient_token_weight_config=gradient_token_weight_config,
@@ -693,6 +758,8 @@ def main() -> None:
         "weight_quant_detail": (
             "per_output_channel_absmax"
             if args.weight_quant_mode == "minmax"
+            else "gptaq_fp8_per_output_channel_original_absmax_scale"
+            if args.weight_quant_mode in {"gptaq", "slot_grad_weighted_gptaq"}
             else "gptq_fp8_per_output_channel_original_absmax_scale"
         ),
         "gptq_calib_split": args.gptq_calib_split,
@@ -700,17 +767,36 @@ def main() -> None:
         "gptq_layers": args.gptq_layers,
         "gptq_damp_percent": args.gptq_damp_percent,
         "gptq_block_size": args.gptq_block_size,
+        "gptaq_alpha": (
+            args.gptaq_alpha
+            if args.weight_quant_mode in {"gptaq", "slot_grad_weighted_gptaq"}
+            else None
+        ),
+        "gptaq_activation_aware": (
+            args.gptaq_activation_aware
+            if args.weight_quant_mode in {"gptaq", "slot_grad_weighted_gptaq"}
+            else None
+        ),
+        "gptaq_activation_target": (
+            "runtime_fp8_qdq" if args.gptaq_activation_aware else "propagated_bf16_path"
+        ) if args.weight_quant_mode in {"gptaq", "slot_grad_weighted_gptaq"} else None,
         "token_weight_config": token_weight_config.to_jsonable() if args.weight_quant_mode == "weighted_gptq" else None,
         "slot_token_weight_config": (
             slot_token_weight_config.to_jsonable() if args.weight_quant_mode == "slot_weighted_gptq" else None
         ),
         "gradient_token_weight_config": (
             gradient_token_weight_config.to_jsonable()
-            if args.weight_quant_mode in {"grad_weighted_gptq", "slot_grad_weighted_gptq"}
+            if args.weight_quant_mode in {"grad_weighted_gptq", "slot_grad_weighted_gptq", "slot_grad_weighted_gptaq"}
             else None
         ),
         "gradient_token_weight_kind": (
-            "layerwise_slot_group"
+            (
+                "linearwise_slot_group_output_grad2"
+                if args.slot_grad_weight_granularity == "linear"
+                else "layerwise_slot_group"
+            )
+            if args.weight_quant_mode == "slot_grad_weighted_gptaq"
+            else "layerwise_slot_group"
             if args.weight_quant_mode == "slot_grad_weighted_gptq"
             else "layerwise_group"
             if args.weight_quant_mode == "grad_weighted_gptq"
@@ -718,12 +804,12 @@ def main() -> None:
         ),
         "gradient_token_weight_loss_mode": (
             args.grad_weight_loss_mode
-            if args.weight_quant_mode in {"grad_weighted_gptq", "slot_grad_weighted_gptq"}
+            if args.weight_quant_mode in {"grad_weighted_gptq", "slot_grad_weighted_gptq", "slot_grad_weighted_gptaq"}
             else None
         ),
         "gradient_token_weight_max_targets": (
             args.grad_weight_max_targets
-            if args.weight_quant_mode in {"grad_weighted_gptq", "slot_grad_weighted_gptq"}
+            if args.weight_quant_mode in {"grad_weighted_gptq", "slot_grad_weighted_gptq", "slot_grad_weighted_gptaq"}
             else None
         ),
         "activation_quant": activation_quant_description,

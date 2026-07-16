@@ -9,7 +9,7 @@ from real_quant.naive_w8a8 import gptq_runtime
 from real_quant.naive_w8a8.apply import _combined_w8a16_forward, apply_naive_w8a8
 from real_quant.naive_w8a8.modules import RealFP8Linear
 from real_quant.naive_w8a8.run_hf_naive_w8a8 import _run_generation_with_optional_profiler, parse_args
-from fake_quant_learnable.gptq import gptq_fp8_quantize_weight
+from fake_quant_learnable.gptq import gptaq_fp8_quantize_weight, gptq_fp8_quantize_weight
 
 
 def _cuda_device_with_free_memory(min_free_bytes: int = 128 * 1024 * 1024) -> torch.device | None:
@@ -54,6 +54,33 @@ def test_real_fp8_linear_from_gptq_linear_matches_fake_gptq_qdq_weight() -> None
     module = RealFP8Linear.from_gptq_linear(linear, hessian, block_size=4)
 
     expected = gptq_fp8_quantize_weight(linear.weight.detach(), hessian, block_size=4).float()
+    actual = (module.weight_fp8_t.float() * module.weight_scale.float()).t().float()
+    torch.testing.assert_close(actual, expected, rtol=5e-3, atol=1e-3)
+
+
+def test_real_fp8_linear_from_gptaq_linear_matches_fake_gptaq_qdq_weight() -> None:
+    torch.manual_seed(1)
+    linear = nn.Linear(8, 12, bias=False, dtype=torch.bfloat16)
+    x_q = torch.randn(6, 8, dtype=torch.float32)
+    x_fp = x_q + 0.05 * torch.randn(6, 8, dtype=torch.float32)
+    hessian_q = x_q.t().matmul(x_q) / float(x_q.shape[0])
+    dxx_t = (x_fp - x_q).t().matmul(x_q) / float(x_q.shape[0])
+
+    module = RealFP8Linear.from_gptaq_linear(
+        linear,
+        hessian_q,
+        dxx_t,
+        alpha=0.25,
+        block_size=4,
+    )
+
+    expected = gptaq_fp8_quantize_weight(
+        linear.weight.detach(),
+        hessian_q,
+        dxx_t,
+        alpha=0.25,
+        block_size=4,
+    ).float()
     actual = (module.weight_fp8_t.float() * module.weight_scale.float()).t().float()
     torch.testing.assert_close(actual, expected, rtol=5e-3, atol=1e-3)
 
@@ -153,6 +180,63 @@ def test_parse_args_accepts_slot_grad_weighted_gptq(monkeypatch) -> None:
     assert args.grad_weight_clip_percentile == 97.0
     assert args.grad_weight_loss_mode == "full_sid_multi_target"
     assert args.grad_weight_max_targets == 4
+
+
+def test_parse_args_accepts_slot_grad_weighted_gptaq(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_hf_naive_w8a8.py",
+            "--weight_quant_mode",
+            "slot_grad_weighted_gptaq",
+            "--gptaq_alpha",
+            "0.5",
+            "--grad_weight_loss_mode",
+            "full_sid_multi_target",
+            "--grad_weight_max_targets",
+            "4",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.weight_quant_mode == "slot_grad_weighted_gptaq"
+    assert args.gptaq_alpha == 0.5
+    assert args.grad_weight_loss_mode == "full_sid_multi_target"
+    assert args.grad_weight_max_targets == 4
+
+
+def test_parse_args_accepts_linear_slot_gradient_granularity(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_hf_naive_w8a8.py",
+            "--weight_quant_mode",
+            "slot_grad_weighted_gptaq",
+            "--slot_grad_weight_granularity",
+            "linear",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.slot_grad_weight_granularity == "linear"
+
+
+def test_parse_args_accepts_plain_gptaq(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_hf_naive_w8a8.py",
+            "--weight_quant_mode",
+            "gptaq",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.weight_quant_mode == "gptaq"
+    assert args.gptaq_alpha == 1.0
 
 
 def test_parse_args_accepts_slot_weighted_gptq_defaults(monkeypatch) -> None:
@@ -273,6 +357,168 @@ def test_build_sid_teacher_forcing_target_token_ids_extracts_multiple_full_sids(
 
     assert len(target_ids) == 1
     assert [ids.tolist() for ids in target_ids[0]] == [[1, 2, 3], [4, 5, 6]]
+
+
+def test_collect_gptaq_linear_stats_uses_quantized_path_inputs_and_token_weights() -> None:
+    linear = nn.Linear(3, 2, bias=False)
+    fp_x = torch.tensor([[[1.0, 2.0, 0.0], [0.5, -1.0, 2.0]]])
+    q_x = torch.tensor([[[0.8, 1.5, 0.2], [0.4, -0.5, 1.5]]])
+    weights = torch.tensor([[2.0, 0.5]])
+
+    stats = gptq_runtime.collect_gptaq_linear_stats(
+        linear,
+        [(fp_x,),],
+        [(q_x,),],
+        token_weight_batches=[weights],
+        activation_quant_mode="static",
+        static_activation_scales={"": 0.5},
+    )
+
+    flat_fp = fp_x.reshape(-1, 3)
+    flat_q = (q_x.reshape(-1, 3) / 0.5).to(torch.float8_e4m3fn).float() * 0.5
+    flat_w = weights.reshape(-1)
+    denominator = float(flat_w.sum().item())
+    expected_h = (flat_q * flat_w.unsqueeze(1)).t().matmul(flat_q) / denominator
+    expected_dxx_t = ((flat_fp - flat_q) * flat_w.unsqueeze(1)).t().matmul(flat_q) / denominator
+
+    torch.testing.assert_close(stats[""].hessian_q, expected_h)
+    torch.testing.assert_close(stats[""].dxx_t, expected_dxx_t)
+
+
+def test_collect_gptaq_linear_stats_prefers_per_linear_token_weights() -> None:
+    linear = nn.Linear(2, 2, bias=False)
+    x = torch.tensor([[[0.5, 1.0], [2.0, -1.0]]])
+    shared_weights = torch.tensor([[1.0, 1.0]])
+    linear_weights = torch.tensor([[3.0, 0.5]])
+
+    stats = gptq_runtime.collect_gptaq_linear_stats(
+        linear,
+        [(x,),],
+        [(x,),],
+        token_weight_batches=[shared_weights],
+        token_weight_batches_by_linear={"": [linear_weights]},
+        activation_quant_mode="static",
+        static_activation_scales={"": 0.5},
+    )
+
+    x_q = (x.reshape(-1, 2) / 0.5).to(torch.float8_e4m3fn).float() * 0.5
+    flat_weights = linear_weights.reshape(-1)
+    expected = (x_q * flat_weights.unsqueeze(1)).t().matmul(x_q) / flat_weights.sum()
+    torch.testing.assert_close(stats[""].hessian_q, expected)
+
+
+def test_collect_gptaq_linear_stats_requires_static_runtime_scales() -> None:
+    linear = nn.Linear(2, 2, bias=False)
+    x = torch.ones(1, 2, 2)
+
+    try:
+        gptq_runtime.collect_gptaq_linear_stats(
+            linear,
+            [(x,),],
+            [(x,),],
+            activation_quant_mode="static",
+        )
+    except ValueError as exc:
+        assert "static_activation_scales" in str(exc)
+    else:
+        raise AssertionError("Static GPTAQ calibration must require the runtime activation scale.")
+
+
+def test_gptaq_runtime_qdq_respects_decode_a16_and_tail_protection() -> None:
+    from real_quant.naive_w8a8.modules import activation_qdq_like_runtime
+
+    x = torch.tensor([[[0.3, 0.7], [0.4, 0.6], [0.2, -0.8]]], dtype=torch.bfloat16)
+    tail_qdq = activation_qdq_like_runtime(
+        x,
+        activation_quant_mode="static",
+        static_scale=0.5,
+        activation_tail_tokens=1,
+    )
+    expected_main = (x[..., :-1, :].float() / 0.5).to(torch.float8_e4m3fn).float() * 0.5
+    torch.testing.assert_close(tail_qdq[..., :-1, :], expected_main)
+    torch.testing.assert_close(tail_qdq[..., -1:, :], x[..., -1:, :].float())
+
+    decode_qdq = activation_qdq_like_runtime(
+        x[..., -1:, :],
+        activation_quant_mode="static",
+        static_scale=0.5,
+        decode_a16_when_single_token=True,
+    )
+    torch.testing.assert_close(decode_qdq, x[..., -1:, :].float())
+
+
+def test_apply_gptaq_real_w8a8_layers_uses_quantized_path_within_layer(monkeypatch) -> None:
+    class OffsetLinear(nn.Module):
+        def __init__(self, linear: nn.Linear) -> None:
+            super().__init__()
+            self.linear = linear
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.linear(x) + 1.0
+
+    class TinyLayer(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first = nn.Linear(2, 2, bias=False)
+            self.second = nn.Linear(2, 2, bias=False)
+            with torch.no_grad():
+                self.first.weight.copy_(torch.eye(2))
+                self.second.weight.copy_(torch.eye(2))
+
+        def forward(self, hidden_states):
+            return self.second(self.first(hidden_states))
+
+    class TinyModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.layers = nn.ModuleList([TinyLayer()])
+
+        def forward(self, input_ids, **_kwargs):
+            hidden = input_ids.float()
+            for layer in self.layers:
+                hidden = layer(hidden)
+            return hidden
+
+    model = TinyModel()
+    model_batches = [{"input_ids": torch.zeros(1, 2, 2)}]
+    seen_dxx_norms: dict[str, float] = {}
+    original_collect = gptq_runtime.collect_gptaq_linear_stats
+
+    def wrapped_collect(*args, **kwargs):
+        stats = original_collect(*args, **kwargs)
+        for name, stat in stats.items():
+            seen_dxx_norms[name] = float(stat.dxx_t.abs().sum().item())
+        return stats
+
+    def fake_from_gptaq_linear(cls, linear, *_args, **_kwargs):
+        return OffsetLinear(linear)
+
+    def fake_runtime_qdq(x, **_kwargs):
+        return x.float() + 0.25
+
+    monkeypatch.setattr(gptq_runtime, "collect_gptaq_linear_stats", wrapped_collect)
+    monkeypatch.setattr(RealFP8Linear, "from_gptaq_linear", classmethod(fake_from_gptaq_linear))
+    monkeypatch.setattr(gptq_runtime, "activation_qdq_like_runtime", fake_runtime_qdq)
+
+    summary = gptq_runtime.apply_gptaq_real_w8a8_layers(
+        model=model,
+        model_batches=model_batches,
+        layer_indices=[0],
+        output_dtype=torch.bfloat16,
+        target_regex=None,
+        skip_regex=None,
+        use_fast_accum=False,
+        activation_quant_mode="dynamic",
+        decode_a16_when_single_token=True,
+        activation_tail_tokens=0,
+        damp_percent=0.01,
+        block_size=128,
+        alpha=0.25,
+    )
+
+    assert summary.replaced_linears == 2
+    assert seen_dxx_norms["first"] > 0.0
+    assert seen_dxx_norms["second"] > 0.0
 
 
 def test_apply_gptq_real_w8a8_layers_uses_layer_specific_token_weights(monkeypatch) -> None:
@@ -590,3 +836,43 @@ def test_decode_a16_shared_mlp_bypasses_shared_activation_prepare(monkeypatch) -
     assert summary.shared_mlp_modules == 1
     assert calls == []
 
+
+def test_parse_args_can_disable_gptaq_activation_aware(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_hf_naive_w8a8.py",
+            "--weight_quant_mode",
+            "gptaq",
+            "--no-gptaq_activation_aware",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.gptaq_activation_aware is False
+
+
+def test_collect_gptaq_linear_stats_can_use_propagated_bf16_path(monkeypatch) -> None:
+    linear = nn.Linear(2, 2, bias=False)
+    fp_x = torch.tensor([[[1.0, 2.0], [3.0, 5.0]]])
+    path_x = torch.tensor([[[0.5, 1.5], [2.0, 4.0]]])
+
+    def fail_runtime_qdq(*_args, **_kwargs):
+        raise AssertionError("Runtime activation QDQ must not run when activation-aware GPTAQ is disabled.")
+
+    monkeypatch.setattr(gptq_runtime, "activation_qdq_like_runtime", fail_runtime_qdq)
+    stats = gptq_runtime.collect_gptaq_linear_stats(
+        linear,
+        [(fp_x,)],
+        [(path_x,)],
+        activation_quant_mode="static",
+        activation_aware=False,
+    )
+
+    flat_fp = fp_x.reshape(-1, 2)
+    flat_path = path_x.reshape(-1, 2)
+    expected_h = flat_path.t().matmul(flat_path) / flat_path.shape[0]
+    expected_d = (flat_fp - flat_path).t().matmul(flat_path) / flat_path.shape[0]
+    torch.testing.assert_close(stats[""].hessian_q, expected_h)
+    torch.testing.assert_close(stats[""].dxx_t, expected_d)

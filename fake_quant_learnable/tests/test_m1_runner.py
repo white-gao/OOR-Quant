@@ -5,7 +5,11 @@ import fake_quant_learnable.run_m1_onerec_ad as runner
 import torch.nn as nn
 
 from fake_quant_learnable.apply import apply_baseline_w8a8
-from fake_quant_learnable.gptq import _stable_cholesky_inverse_factor, gptq_fp8_quantize_weight
+from fake_quant_learnable.gptq import (
+    _stable_cholesky_inverse_factor,
+    gptaq_fp8_quantize_weight,
+    gptq_fp8_quantize_weight,
+)
 from fake_quant_learnable.modules import (
     BaselineFakeQuantLinear,
     GPTQFakeQuantLinear,
@@ -379,6 +383,31 @@ def test_gptq_fp8_quantize_weight_reduces_calibrated_reconstruction_error() -> N
     gptq_mse = torch.mean((target - x.matmul(gptq_weight.t())) ** 2)
 
     assert gptq_mse <= naive_mse
+
+
+def test_gptaq_fp8_quantize_weight_matches_gptq_when_asymmetric_term_is_zero() -> None:
+    torch.manual_seed(22)
+    weight = torch.randn(5, 7, dtype=torch.float32)
+    x = torch.randn(11, 7, dtype=torch.float32)
+    hessian = x.t().matmul(x) / float(x.shape[0])
+    dxx_t = torch.zeros_like(hessian)
+
+    gptq_weight = gptq_fp8_quantize_weight(
+        weight,
+        hessian,
+        damp_percent=0.01,
+        block_size=3,
+    )
+    gptaq_weight = gptaq_fp8_quantize_weight(
+        weight,
+        hessian,
+        dxx_t,
+        alpha=0.25,
+        damp_percent=0.01,
+        block_size=3,
+    )
+
+    torch.testing.assert_close(gptaq_weight.float(), gptq_weight.float(), rtol=0, atol=0)
 
 
 def test_apply_gptq_fp8_layers_replaces_selected_layer_with_gptq_wrappers() -> None:

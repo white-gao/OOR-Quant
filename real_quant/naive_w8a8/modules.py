@@ -85,6 +85,58 @@ def activation_scale_per_token(x_2d: torch.Tensor, *, qmax: float, eps: float) -
     return _safe_scale(x_2d.detach().float().abs().amax(dim=1, keepdim=True), qmax=qmax, eps=eps)
 
 
+def activation_qdq_like_runtime(
+    x: torch.Tensor,
+    *,
+    activation_quant_mode: ActivationQuantMode,
+    qmax: float = FP8_MAX,
+    eps: float = 1e-12,
+    static_scale: torch.Tensor | float | None = None,
+    decode_a16_when_single_token: bool = False,
+    activation_tail_tokens: int = 0,
+) -> torch.Tensor:
+    """Return the activation values consumed by the runtime Linear path.
+
+    The result is FP8-QDQ in the FP8 path and the original BF16/FP32 value in
+    decode-A16 or tail-protected rows. It is intended for offline calibration
+    statistics, not for the latency-critical inference path.
+    """
+    mode = _validate_activation_quant_mode(activation_quant_mode)
+    if activation_tail_tokens < 0:
+        raise ValueError(f"activation_tail_tokens must be non-negative, got {activation_tail_tokens}")
+    if x.ndim < 1:
+        raise ValueError(f"Expected activation with at least one dimension, got {tuple(x.shape)}")
+
+    if decode_a16_when_single_token and x.ndim >= 3 and int(x.shape[-2]) == 1:
+        return x.detach().float()
+
+    tail = 0
+    if activation_tail_tokens > 0 and x.ndim >= 3:
+        tail = min(int(activation_tail_tokens), int(x.shape[-2]))
+    if tail > 0:
+        if tail >= int(x.shape[-2]):
+            return x.detach().float()
+        main = activation_qdq_like_runtime(
+            x[..., :-tail, :],
+            activation_quant_mode=mode,
+            qmax=qmax,
+            eps=eps,
+            static_scale=static_scale,
+        )
+        return torch.cat([main, x[..., -tail:, :].detach().float()], dim=-2)
+
+    x_2d = x.detach().float().reshape(-1, x.shape[-1]).contiguous()
+    if mode == "dynamic":
+        x_fp8, scale = _vllm_scaled_fp8_quant(x_2d)
+    else:
+        if static_scale is None:
+            raise ValueError("static_activation_scales must provide every GPTAQ Linear runtime scale.")
+        scale = torch.as_tensor(static_scale, device=x_2d.device, dtype=torch.float32).reshape(1, 1)
+        scale = torch.clamp(scale, min=float(eps)).expand(x_2d.shape[0], 1).contiguous()
+        x_fp8 = quantize_fp8(x_2d, scale, qmax=qmax)
+    return (x_fp8.float() * scale.float()).reshape_as(x)
+
+
 def _validate_activation_quant_mode(mode: str) -> ActivationQuantMode:
     if mode not in ("dynamic", "static"):
         raise ValueError(f"Unsupported activation_quant_mode {mode!r}; expected 'dynamic' or 'static'.")
@@ -228,6 +280,68 @@ class RealFP8Linear(nn.Module):
         weight_qdq = gptq_fp8_quantize_weight(
             weight,
             hessian,
+            damp_percent=damp_percent,
+            block_size=block_size,
+            qmax=qmax,
+            eps=eps,
+        )
+        scale = weight_scale_per_output_channel(weight, qmax=qmax, eps=eps)
+        weight_fp8 = quantize_fp8(weight_qdq, scale, qmax=qmax)
+        return cls(
+            weight_fp8_t=weight_fp8.t(),
+            weight_scale=scale.t().contiguous(),
+            bias=linear.bias,
+            in_features=int(in_features),
+            out_features=int(out_features),
+            qmax=qmax,
+            eps=eps,
+            output_dtype=chosen_output_dtype,
+            use_fast_accum=use_fast_accum,
+            activation_quant_mode=activation_quant_mode,
+            decode_a16_when_single_token=decode_a16_when_single_token,
+            activation_tail_tokens=activation_tail_tokens,
+        )
+
+    @classmethod
+    def from_gptaq_linear(
+        cls,
+        linear: nn.Linear,
+        hessian_q: torch.Tensor,
+        dxx_t: torch.Tensor,
+        *,
+        alpha: float = 1.0,
+        qmax: float = FP8_MAX,
+        eps: float = 1e-12,
+        output_dtype: torch.dtype | None = None,
+        use_fast_accum: bool = False,
+        activation_quant_mode: ActivationQuantMode = "dynamic",
+        decode_a16_when_single_token: bool = False,
+        activation_tail_tokens: int = 0,
+        damp_percent: float = 0.01,
+        block_size: int = 128,
+    ) -> "RealFP8Linear":
+        if linear.weight.ndim != 2:
+            raise ValueError(f"Expected 2D Linear weight, got shape {tuple(linear.weight.shape)}")
+        out_features, in_features = linear.weight.shape
+        expected_shape = (int(in_features), int(in_features))
+        if hessian_q.shape != expected_shape:
+            raise ValueError(f"Expected GPTAQ Hessian shape {expected_shape}, got {tuple(hessian_q.shape)}")
+        if dxx_t.shape != expected_shape:
+            raise ValueError(f"Expected GPTAQ dxx_t shape {expected_shape}, got {tuple(dxx_t.shape)}")
+        chosen_output_dtype = output_dtype
+        if chosen_output_dtype is None:
+            chosen_output_dtype = linear.weight.dtype
+            if chosen_output_dtype not in (torch.bfloat16, torch.float16, torch.float32):
+                chosen_output_dtype = torch.bfloat16
+
+        from fake_quant_learnable.gptq import gptaq_fp8_quantize_weight
+
+        weight = linear.weight.detach()
+        weight_qdq = gptaq_fp8_quantize_weight(
+            weight,
+            hessian_q,
+            dxx_t,
+            alpha=alpha,
             damp_percent=damp_percent,
             block_size=block_size,
             qmax=qmax,

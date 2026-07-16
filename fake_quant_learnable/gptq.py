@@ -229,6 +229,97 @@ def gptq_fp8_quantize_weight(
     return W.to(orig_dtype)
 
 
+def gptaq_fp8_quantize_weight(
+    weight: torch.Tensor,
+    hessian_q: torch.Tensor,
+    dxx_t: torch.Tensor,
+    *,
+    alpha: float = 1.0,
+    damp_percent: float = DEFAULT_GPTQ_DAMP_PERCENT,
+    block_size: int = DEFAULT_GPTQ_BLOCK_SIZE,
+    qmax: float = FP8_MAX,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Quantize a Linear weight matrix with GPTAQ asymmetric correction.
+
+    ``hessian_q`` is built from quantized-path Linear inputs. ``dxx_t`` is
+    ``(X_fp - X_q)^T X_q`` under the same calibration weighting. When
+    ``dxx_t`` is zero, this routine reduces to ``gptq_fp8_quantize_weight``.
+    """
+    if weight.ndim != 2:
+        raise ValueError(f"Expected 2D Linear weight, got shape {tuple(weight.shape)}")
+    rows, columns = weight.shape
+    if hessian_q.shape != (columns, columns):
+        raise ValueError(
+            f"Expected GPTAQ Hessian shape ({columns}, {columns}) for weight {tuple(weight.shape)}, "
+            f"got {tuple(hessian_q.shape)}"
+        )
+    if dxx_t.shape != (columns, columns):
+        raise ValueError(
+            f"Expected GPTAQ dxx_t shape ({columns}, {columns}) for weight {tuple(weight.shape)}, "
+            f"got {tuple(dxx_t.shape)}"
+        )
+    if block_size <= 0:
+        raise ValueError(f"block_size must be positive, got {block_size}")
+    if damp_percent < 0:
+        raise ValueError(f"damp_percent must be non-negative, got {damp_percent}")
+
+    del rows
+    orig_dtype = weight.dtype
+    device = weight.device
+    W = weight.detach().float().clone()
+    H = hessian_q.detach().float().to(device=device).clone()
+    H = 0.5 * (H + H.t())
+    D = dxx_t.detach().float().to(device=device).clone()
+
+    diag_idx = torch.arange(columns, device=device)
+    diag = torch.diag(H)
+    dead = diag <= eps
+    if torch.any(dead):
+        H[dead, dead] = 1.0
+        W[:, dead] = 0.0
+        D[:, dead] = 0.0
+
+    live_diag = torch.diag(H)[~dead]
+    damp_base = live_diag.mean() if live_diag.numel() else torch.tensor(1.0, device=device)
+    H[diag_idx, diag_idx] += float(damp_percent) * damp_base.clamp_min(eps)
+
+    Hinv = _stable_cholesky_inverse_factor(H, eps=eps)
+    if float(alpha) == 0.0 or torch.count_nonzero(D).item() == 0:
+        P = torch.zeros_like(Hinv)
+    else:
+        P = float(alpha) * torch.triu(D.matmul(Hinv.t()), diagonal=1).matmul(Hinv)
+    scale = _fp8_row_scale(weight.detach().float(), qmax=qmax, eps=eps).to(device=device)
+
+    for start in range(0, columns, block_size):
+        end = min(start + block_size, columns)
+        width = end - start
+        W_block = W[:, start:end].clone()
+        Q_block = torch.zeros_like(W_block)
+        Err_block = torch.zeros_like(W_block)
+        Hinv_block = Hinv[start:end, start:end]
+        P_block = P[start:end, start:end]
+
+        for idx in range(width):
+            w = W_block[:, idx]
+            d = Hinv_block[idx, idx].clamp_min(eps)
+            q = fp8_e4m3_qdq_forward(w, scale, qmax=qmax, eps=eps).float()
+            Q_block[:, idx] = q
+            err = (w - q) / d
+            if idx + 1 < width:
+                W_block[:, idx + 1 :] -= (
+                    err.unsqueeze(1).matmul(Hinv_block[idx, idx + 1 :].unsqueeze(0))
+                    - w.unsqueeze(1).matmul(P_block[idx, idx + 1 :].unsqueeze(0))
+                )
+            Err_block[:, idx] = err
+
+        W[:, start:end] = Q_block
+        if end < columns:
+            W[:, end:] -= Err_block.matmul(Hinv[start:end, end:]) - Q_block.matmul(P[start:end, end:])
+
+    return W.to(orig_dtype)
+
+
 def _stable_cholesky_inverse_factor(H: torch.Tensor, *, eps: float) -> torch.Tensor:
     diag_idx = torch.arange(H.shape[0], device=H.device)
     diag_scale = torch.diag(H).detach().abs().mean().clamp_min(float(eps))
