@@ -229,6 +229,63 @@ def gptq_fp8_quantize_weight(
     return W.to(orig_dtype)
 
 
+
+def conditional_gptq_fp8_quantize_weight(
+    weight: torch.Tensor,
+    group_hessians: torch.Tensor,
+    row_group_ids: torch.Tensor,
+    *,
+    damp_percent: float = DEFAULT_GPTQ_DAMP_PERCENT,
+    block_size: int = DEFAULT_GPTQ_BLOCK_SIZE,
+    qmax: float = FP8_MAX,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Hard slot-conditional GPTQ for a Linear weight matrix.
+
+    ``group_hessians[g]`` is the token-count-normalized input Hessian for one
+    token group. Each output row is quantized independently with the Hessian
+    selected by ``row_group_ids[row]``. This is the hard-routing minimal form
+    of conditional Hessian GPTQ; all rows retain the usual per-output-channel
+    FP8 scale and the exported weight format is unchanged.
+    """
+    if weight.ndim != 2:
+        raise ValueError(f"Expected 2D Linear weight, got shape {tuple(weight.shape)}")
+    rows, columns = weight.shape
+    if group_hessians.ndim != 3 or tuple(group_hessians.shape[1:]) != (columns, columns):
+        raise ValueError(
+            "Expected group_hessians shape "
+            f"[groups, {columns}, {columns}], got {tuple(group_hessians.shape)}"
+        )
+    if row_group_ids.ndim != 1 or row_group_ids.numel() != rows:
+        raise ValueError(
+            f"Expected one row-group id for each of {rows} output rows, got {tuple(row_group_ids.shape)}"
+        )
+    if group_hessians.shape[0] <= 0:
+        raise ValueError("group_hessians must contain at least one token group.")
+
+    assignments = row_group_ids.detach().to(device=weight.device, dtype=torch.long)
+    if int(assignments.min().item()) < 0 or int(assignments.max().item()) >= group_hessians.shape[0]:
+        raise ValueError(
+            f"row_group_ids must be in [0, {group_hessians.shape[0] - 1}], "
+            f"got min={int(assignments.min().item())}, max={int(assignments.max().item())}"
+        )
+
+    quantized = weight.detach().clone()
+    for group_id in range(group_hessians.shape[0]):
+        row_indices = torch.nonzero(assignments == group_id, as_tuple=False).reshape(-1)
+        if row_indices.numel() == 0:
+            continue
+        quantized[row_indices] = gptq_fp8_quantize_weight(
+            weight[row_indices],
+            group_hessians[group_id],
+            damp_percent=damp_percent,
+            block_size=block_size,
+            qmax=qmax,
+            eps=eps,
+        )
+    return quantized
+
+
 def gptaq_fp8_quantize_weight(
     weight: torch.Tensor,
     hessian_q: torch.Tensor,

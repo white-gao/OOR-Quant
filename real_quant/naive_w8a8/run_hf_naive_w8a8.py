@@ -27,6 +27,7 @@ from real_quant.full_precision.run_hf_baseline import (
 )
 
 from .apply import NaiveW8A8Summary, apply_naive_w8a8, iter_real_fp8_linears
+from .conditional_gptq import apply_conditional_gptq_real_w8a8_layers
 from .gptq_runtime import (
     WEIGHT_QUANT_MODES,
     apply_gptaq_real_w8a8_layers,
@@ -113,6 +114,9 @@ class HFNaiveW8A8Generator(HFFullPrecisionGenerator):
         gptq_layers: str = "all",
         gptq_damp_percent: float = DEFAULT_GPTQ_DAMP_PERCENT,
         gptq_block_size: int = DEFAULT_GPTQ_BLOCK_SIZE,
+        conditional_hessian_max_entropy: float = 0.94,
+        conditional_hessian_min_max_pi: float = 0.35,
+        conditional_hessian_min_channel_fraction: float = 0.35,
         gptaq_alpha: float = 1.0,
         gptaq_activation_aware: bool = True,
         token_weight_config: PromptTokenWeightConfig = DEFAULT_PROMPT_TOKEN_WEIGHT_CONFIG,
@@ -191,6 +195,7 @@ class HFNaiveW8A8Generator(HFFullPrecisionGenerator):
             token_weight_batches = None
             token_weight_batches_by_layer = None
             token_weight_batches_by_layer_and_linear = None
+            conditional_token_group_batches = None
             if weight_quant_mode == "weighted_gptq":
                 token_weight_batches = build_prompt_token_weight_batches(
                     tokenizer=tokenizer,
@@ -204,6 +209,12 @@ class HFNaiveW8A8Generator(HFFullPrecisionGenerator):
                     prompts=calib_prompts,
                     device=input_device,
                     config=slot_token_weight_config,
+                )
+            elif weight_quant_mode == "conditional_gptq":
+                conditional_token_group_batches = build_prompt_slot_token_group_batches(
+                    tokenizer=tokenizer,
+                    prompts=calib_prompts,
+                    device=input_device,
                 )
             elif weight_quant_mode in {"grad_weighted_gptq", "slot_grad_weighted_gptq", "slot_grad_weighted_gptaq"}:
                 if gradient_loss_mode not in {"first_sid", "full_sid_multi_target"}:
@@ -277,6 +288,27 @@ class HFNaiveW8A8Generator(HFFullPrecisionGenerator):
                     token_weight_batches=token_weight_batches,
                     token_weight_batches_by_layer=token_weight_batches_by_layer,
                     token_weight_batches_by_layer_and_linear=token_weight_batches_by_layer_and_linear,
+                )
+            elif weight_quant_mode == "conditional_gptq":
+                if conditional_token_group_batches is None:
+                    raise RuntimeError("Conditional GPTQ requires slot token-group calibration batches.")
+                quant_summary = apply_conditional_gptq_real_w8a8_layers(
+                    model=model,
+                    model_batches=calib_batches,
+                    token_group_batches=conditional_token_group_batches,
+                    layer_indices=layer_indices,
+                    output_dtype=output_dtype,
+                    target_regex=target_regex,
+                    skip_regex=skip_regex,
+                    use_fast_accum=use_fast_accum,
+                    activation_quant_mode=activation_quant_mode,
+                    decode_a16_when_single_token=decode_a16_when_single_token,
+                    activation_tail_tokens=activation_tail_tokens,
+                    damp_percent=gptq_damp_percent,
+                    block_size=gptq_block_size,
+                    max_entropy=conditional_hessian_max_entropy,
+                    min_dominant_probability=conditional_hessian_min_max_pi,
+                    min_dominant_fraction=conditional_hessian_min_channel_fraction,
                 )
             else:
                 quant_summary = apply_gptq_real_w8a8_layers(
@@ -396,6 +428,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gptq_layers", default="all", help='Layer spec for GPTQ: "all", "last:K", or "0,2-4".')
     parser.add_argument("--gptq_damp_percent", type=float, default=DEFAULT_GPTQ_DAMP_PERCENT)
     parser.add_argument("--gptq_block_size", type=int, default=DEFAULT_GPTQ_BLOCK_SIZE)
+    parser.add_argument("--conditional_hessian_max_entropy", type=float, default=0.94)
+    parser.add_argument("--conditional_hessian_min_max_pi", type=float, default=0.35)
+    parser.add_argument("--conditional_hessian_min_channel_fraction", type=float, default=0.35)
     parser.add_argument("--gptaq_alpha", type=float, default=1.0)
     parser.add_argument(
         "--gptaq_activation_aware",
@@ -658,6 +693,9 @@ def main() -> None:
         gptq_layers=args.gptq_layers,
         gptq_damp_percent=args.gptq_damp_percent,
         gptq_block_size=args.gptq_block_size,
+        conditional_hessian_max_entropy=args.conditional_hessian_max_entropy,
+        conditional_hessian_min_max_pi=args.conditional_hessian_min_max_pi,
+        conditional_hessian_min_channel_fraction=args.conditional_hessian_min_channel_fraction,
         gptaq_alpha=args.gptaq_alpha,
         gptaq_activation_aware=args.gptaq_activation_aware,
         slot_grad_weight_granularity=args.slot_grad_weight_granularity,
@@ -772,6 +810,13 @@ def main() -> None:
             if args.weight_quant_mode in {"gptaq", "slot_grad_weighted_gptaq"}
             else None
         ),
+        "conditional_hessian_config": {
+            "routing": "hard_argmax_output_slot_mixture",
+            "hessian": "token_count_normalized_slot_hessian",
+            "max_entropy": args.conditional_hessian_max_entropy,
+            "min_max_pi": args.conditional_hessian_min_max_pi,
+            "min_channel_fraction": args.conditional_hessian_min_channel_fraction,
+        } if args.weight_quant_mode == "conditional_gptq" else None,
         "gptaq_activation_aware": (
             args.gptaq_activation_aware
             if args.weight_quant_mode in {"gptaq", "slot_grad_weighted_gptaq"}

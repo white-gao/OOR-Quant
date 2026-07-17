@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 
 from fake_quant_learnable.gptq import collect_gptq_hessians
+from fake_quant_learnable.token_weights import SLOT_TOKEN_GROUPS
 from fake_quant_learnable.support.runtime_utils import _detach_tree, _module_device, _move_tree_to_device
 from fake_quant_learnable.support.smoothquant_runtime import Batch, _batch_to_args_kwargs
 
@@ -21,6 +22,7 @@ from .modules import ActivationQuantMode, RealFP8Linear, activation_qdq_like_run
 WEIGHT_QUANT_MODES = (
     "minmax",
     "gptq",
+    "conditional_gptq",
     "gptaq",
     "weighted_gptq",
     "grad_weighted_gptq",

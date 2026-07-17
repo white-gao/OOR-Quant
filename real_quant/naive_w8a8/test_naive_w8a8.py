@@ -8,11 +8,65 @@ import torch.nn as nn
 from real_quant.naive_w8a8 import gptq_runtime
 from real_quant.naive_w8a8.apply import _combined_w8a16_forward, apply_naive_w8a8
 from real_quant.naive_w8a8.modules import RealFP8Linear
+from real_quant.naive_w8a8.conditional_gptq import collect_conditional_gptq_stats, conditional_hessian_enabled
 from real_quant.naive_w8a8.run_hf_naive_w8a8 import _run_generation_with_optional_profiler, parse_args
 from fake_quant_learnable.gptq import gptaq_fp8_quantize_weight, gptq_fp8_quantize_weight
 
+from fake_quant_learnable.gptq import conditional_gptq_fp8_quantize_weight
+
+
+def test_conditional_gptq_matches_independent_group_gptq_rows() -> None:
+    torch.manual_seed(7)
+    weight = torch.randn(6, 4, dtype=torch.bfloat16)
+    group_inputs = [torch.randn(9, 4), torch.randn(11, 4) * 0.25]
+    group_hessians = torch.stack([x.t().matmul(x) / float(x.shape[0]) for x in group_inputs])
+    assignments = torch.tensor([0, 1, 0, 1, 1, 0])
+
+    actual = conditional_gptq_fp8_quantize_weight(weight, group_hessians, assignments, block_size=2)
+    expected = weight.detach().clone()
+    for group_id in range(group_hessians.shape[0]):
+        rows = torch.nonzero(assignments == group_id, as_tuple=False).reshape(-1)
+        expected[rows] = gptq_fp8_quantize_weight(weight[rows], group_hessians[group_id], block_size=2)
+
+    torch.testing.assert_close(actual.float(), expected.float(), rtol=0, atol=0)
+
+
+def test_collect_conditional_gptq_stats_partitions_hessian_by_slot_group() -> None:
+    class TinyLayer(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.proj = nn.Linear(2, 3, bias=False)
+            with torch.no_grad():
+                self.proj.weight.copy_(torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]))
+
+        def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+            return self.proj(hidden_states)
+
+    layer = TinyLayer()
+    x = torch.tensor([[[1.0, 2.0], [2.0, 1.0], [3.0, 1.0], [1.0, 3.0], [2.0, 2.0]]])
+    groups = torch.tensor([[0, 1, 2, 3, 4]])
+
+    stats = collect_conditional_gptq_stats(
+        layer,
+        [((x,), {})],
+        token_group_batches=[groups],
+    )["proj"]
+
+    expected_groups = torch.stack([torch.outer(x[0, index], x[0, index]) for index in range(5)])
+    torch.testing.assert_close(stats.group_hessians, expected_groups)
+    torch.testing.assert_close(stats.global_hessian, expected_groups.mean(dim=0))
+    assert stats.row_group_ids.shape == (3,)
+    assert stats.row_max_pi.shape == (3,)
+    assert conditional_hessian_enabled(
+        stats,
+        max_entropy=1.0,
+        min_dominant_probability=0.2,
+        min_dominant_fraction=1.0,
+    )
+
 
 def _cuda_device_with_free_memory(min_free_bytes: int = 128 * 1024 * 1024) -> torch.device | None:
+
     if not torch.cuda.is_available():
         return None
     best_index = None

@@ -303,6 +303,71 @@ class RealFP8Linear(nn.Module):
         )
 
     @classmethod
+    def from_conditional_gptq_linear(
+        cls,
+        linear: nn.Linear,
+        group_hessians: torch.Tensor,
+        row_group_ids: torch.Tensor,
+        *,
+        qmax: float = FP8_MAX,
+        eps: float = 1e-12,
+        output_dtype: torch.dtype | None = None,
+        use_fast_accum: bool = False,
+        activation_quant_mode: ActivationQuantMode = "dynamic",
+        decode_a16_when_single_token: bool = False,
+        activation_tail_tokens: int = 0,
+        damp_percent: float = 0.01,
+        block_size: int = 128,
+    ) -> "RealFP8Linear":
+        """Build a RealFP8Linear using hard slot-conditional GPTQ rows."""
+        if linear.weight.ndim != 2:
+            raise ValueError(f"Expected 2D Linear weight, got shape {tuple(linear.weight.shape)}")
+        out_features, in_features = linear.weight.shape
+        expected_hessian_shape = (int(in_features), int(in_features))
+        if group_hessians.ndim != 3 or tuple(group_hessians.shape[1:]) != expected_hessian_shape:
+            raise ValueError(
+                "Expected conditional GPTQ Hessians with shape "
+                f"[groups, {expected_hessian_shape[0]}, {expected_hessian_shape[1]}], "
+                f"got {tuple(group_hessians.shape)}"
+            )
+        if row_group_ids.ndim != 1 or row_group_ids.numel() != int(out_features):
+            raise ValueError(f"Expected {int(out_features)} row-group ids, got {tuple(row_group_ids.shape)}")
+        chosen_output_dtype = output_dtype
+        if chosen_output_dtype is None:
+            chosen_output_dtype = linear.weight.dtype
+            if chosen_output_dtype not in (torch.bfloat16, torch.float16, torch.float32):
+                chosen_output_dtype = torch.bfloat16
+
+        from fake_quant_learnable.gptq import conditional_gptq_fp8_quantize_weight
+
+        weight = linear.weight.detach()
+        weight_qdq = conditional_gptq_fp8_quantize_weight(
+            weight,
+            group_hessians,
+            row_group_ids,
+            damp_percent=damp_percent,
+            block_size=block_size,
+            qmax=qmax,
+            eps=eps,
+        )
+        scale = weight_scale_per_output_channel(weight, qmax=qmax, eps=eps)
+        weight_fp8 = quantize_fp8(weight_qdq, scale, qmax=qmax)
+        return cls(
+            weight_fp8_t=weight_fp8.t(),
+            weight_scale=scale.t().contiguous(),
+            bias=linear.bias,
+            in_features=int(in_features),
+            out_features=int(out_features),
+            qmax=qmax,
+            eps=eps,
+            output_dtype=chosen_output_dtype,
+            use_fast_accum=use_fast_accum,
+            activation_quant_mode=activation_quant_mode,
+            decode_a16_when_single_token=decode_a16_when_single_token,
+            activation_tail_tokens=activation_tail_tokens,
+        )
+
+    @classmethod
     def from_gptaq_linear(
         cls,
         linear: nn.Linear,
